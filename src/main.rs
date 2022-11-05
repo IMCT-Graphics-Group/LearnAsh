@@ -144,19 +144,29 @@ impl VulkanRenderer {
     fn draw_frame(&mut self) {
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
-        let (image_index, _is_sub_optimal) = unsafe {
+        unsafe {
             self.device
                 .wait_for_fences(&wait_fences, true, std::u64::MAX)
                 .expect("Failed to wait for Fence!");
+        }
 
-            self.swapchian_loader
-                .acquire_next_image(
-                    self.swapchain,
-                    std::u64::MAX,
-                    self.image_available_semaphores[self.current_frame],
-                    vk::Fence::null(),
-                )
-                .expect("Failed to acquire next image.")
+        let (image_index, _is_sub_optimal) = unsafe {
+            let result = self.swapchian_loader.acquire_next_image(
+                self.swapchain,
+                std::u64::MAX,
+                self.image_available_semaphores[self.current_frame],
+                vk::Fence::null(),
+            );
+            match result {
+                Ok(image_index) => image_index,
+                Err(vk_result) => match vk_result {
+                    vk::Result::ERROR_OUT_OF_DATE_KHR => {
+                        self.recreate_swapchain();
+                        return;
+                    }
+                    _ => panic!("Failed to acquire next image."),
+                },
+            }
         };
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
