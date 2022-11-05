@@ -164,7 +164,7 @@ impl VulkanRenderer {
                         self.recreate_swapchain();
                         return;
                     }
-                    _ => panic!("Failed to acquire next image."),
+                    _ => panic!("Failed to acquire Swap Chain Image!"),
                 },
             }
         };

@@ -723,7 +723,7 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     };
 
-    let subpass = vk::SubpassDescription {
+    let subpasses = [vk::SubpassDescription {
         flags: vk::SubpassDescriptionFlags::empty(),
         pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
         input_attachment_count: 0,
@@ -734,9 +734,19 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         p_depth_stencil_attachment: ptr::null(),
         preserve_attachment_count: 0,
         p_preserve_attachments: ptr::null(),
-    };
+    }];
 
     let render_pass_attachments = [color_attachment];
+
+    let subpass_dependencies = [vk::SubpassDependency {
+        src_subpass: vk::SUBPASS_EXTERNAL,
+        dst_subpass: 0,
+        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        src_access_mask: vk::AccessFlags::empty(),
+        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        dependency_flags: vk::DependencyFlags::empty(),
+    }];
 
     let renderpass_create_info = vk::RenderPassCreateInfo {
         s_type: vk::StructureType::RENDER_PASS_CREATE_INFO,
@@ -744,10 +754,10 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         p_next: ptr::null(),
         attachment_count: render_pass_attachments.len() as u32,
         p_attachments: render_pass_attachments.as_ptr(),
-        subpass_count: 1,
-        p_subpasses: &subpass,
-        dependency_count: 0,
-        p_dependencies: ptr::null(),
+        subpass_count: subpasses.len() as u32,
+        p_subpasses: subpasses.as_ptr(),
+        dependency_count: subpass_dependencies.len() as u32,
+        p_dependencies: subpass_dependencies.as_ptr(),
     };
 
     unsafe {
