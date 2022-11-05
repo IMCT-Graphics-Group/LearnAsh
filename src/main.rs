@@ -12,6 +12,8 @@ use winit::{
 };
 
 struct VulkanRenderer {
+    window: winit::window::Window,
+
     _entry: ash::Entry,
     instance: ash::Instance,
     surface_loader: ash::extensions::khr::Surface,
@@ -50,16 +52,23 @@ struct VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    pub fn new(window: &winit::window::Window) -> VulkanRenderer {
+    pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> VulkanRenderer {
+        let window = utility::window::init_window(event_loop);
+
         let entry = ash::Entry::linked();
         let instance = utility::general::create_instance(&entry);
         let surface_stuff = utility::general::create_surface(&entry, &instance, &window);
         let (debug_utils_loader, debug_messenger) =
             utility::debug::setup_debug_utils(&entry, &instance);
 
-        let physical_device = utility::general::pick_physcial_device(&instance, &surface_stuff);
-        let (device, queue_family) =
-            utility::general::create_logical_device(&instance, physical_device, &surface_stuff);
+        let physical_device =
+            utility::general::pick_physcial_device(&instance, &surface_stuff, &DEVICE_EXTENSIONS);
+        let (device, queue_family) = utility::general::create_logical_device(
+            &instance,
+            physical_device,
+            &DEVICE_EXTENSIONS,
+            &surface_stuff,
+        );
 
         let graphics_queue =
             unsafe { device.get_device_queue(queue_family.graphics_family.unwrap(), 0) };
@@ -70,6 +79,7 @@ impl VulkanRenderer {
             &instance,
             &device,
             physical_device,
+            &window,
             &surface_stuff,
             &queue_family,
         );
@@ -103,6 +113,8 @@ impl VulkanRenderer {
         let sync_objects = utility::general::create_sync_objects(&device);
 
         VulkanRenderer {
+            window,
+
             _entry: entry,
             instance,
             surface: surface_stuff.surface,
@@ -250,6 +262,7 @@ impl VulkanRenderer {
             &self.instance,
             &self.device,
             self.physical_device,
+            &self.window,
             &surface_stuff,
             &self.queue_family,
         );
@@ -338,7 +351,7 @@ impl Drop for VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    pub fn main_loop(mut self, event_loop: EventLoop<()>, window: winit::window::Window) {
+    pub fn main_loop(mut self, event_loop: EventLoop<()>) {
         event_loop.run(move |event, _, control_flow| match event {
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
@@ -357,7 +370,7 @@ impl VulkanRenderer {
                 _ => {}
             },
             Event::MainEventsCleared => {
-                window.request_redraw();
+                self.window.request_redraw();
             }
             Event::RedrawRequested(_window_id) => {
                 self.draw_frame();
@@ -375,8 +388,7 @@ impl VulkanRenderer {
 }
 fn main() {
     let event_loop = EventLoop::new();
-    let window = utility::window::init_window(&event_loop);
 
-    let vulkan_renderer = VulkanRenderer::new(&window);
-    vulkan_renderer.main_loop(event_loop, window);
+    let vulkan_renderer = VulkanRenderer::new(&event_loop);
+    vulkan_renderer.main_loop(event_loop);
 }

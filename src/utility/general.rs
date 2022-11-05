@@ -25,7 +25,7 @@ pub fn create_instance(entry: &ash::Entry) -> ash::Instance {
         p_next: ptr::null(),
         api_version: API_VERSION,
         engine_version: ENGINE_VERSION,
-        ..Default::default()
+        application_version: APPLICATION_VERSION,
     };
 
     let debug_utils_create_info = utility::debug::populate_debug_messenger_create_info();
@@ -63,7 +63,6 @@ pub fn create_instance(entry: &ash::Entry) -> ash::Instance {
         } as u32,
         pp_enabled_extension_names: extension_names.as_ptr(),
         enabled_extension_count: extension_names.len() as u32,
-        ..Default::default()
     };
 
     let instance: ash::Instance = unsafe {
@@ -96,6 +95,7 @@ pub fn create_surface(
 pub fn pick_physcial_device(
     instance: &ash::Instance,
     surface_stuff: &SurfaceStuff,
+    required_device_extensions: &DeviceExtension,
 ) -> vk::PhysicalDevice {
     let physical_devices = unsafe {
         instance
@@ -104,13 +104,19 @@ pub fn pick_physcial_device(
     };
 
     let result = physical_devices.iter().find(|physical_device| {
-        let is_suitable = is_physical_device_suitable(instance, **physical_device, surface_stuff);
+        let is_suitable = is_physical_device_suitable(
+            instance,
+            **physical_device,
+            surface_stuff,
+            required_device_extensions,
+        );
+
         is_suitable
     });
 
     match result {
-        None => panic!("Failed to find a suitable GPU!"),
         Some(physical_device) => *physical_device,
+        None => panic!("Failed to find a suitable GPU!"),
     }
 }
 
@@ -118,6 +124,7 @@ fn is_physical_device_suitable(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
     surface_stuff: &SurfaceStuff,
+    required_device_extensions: &DeviceExtension,
 ) -> bool {
     let device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
     println!(
@@ -125,13 +132,13 @@ fn is_physical_device_suitable(
         utility::tools::vk_to_string(&device_properties.device_name)
     );
 
-    let _device_features = unsafe { instance.get_physical_device_features(physical_device) };
+    let device_features = unsafe { instance.get_physical_device_features(physical_device) };
 
     let indices = find_queue_family(instance, physical_device, surface_stuff);
 
     let is_queue_family_supported = indices.is_complete();
-
-    let is_device_extension_supported = check_device_extension_support(instance, physical_device);
+    let is_device_extension_supported =
+        check_device_extension_support(instance, physical_device, required_device_extensions);
 
     let is_swapchain_supported = if is_device_extension_supported {
         let swapchain_support = query_swapchain_support(physical_device, surface_stuff);
@@ -139,25 +146,28 @@ fn is_physical_device_suitable(
     } else {
         false
     };
+    let is_support_sampler_anisotropy = device_features.sampler_anisotropy == 1;
 
-    return is_queue_family_supported && is_device_extension_supported && is_swapchain_supported;
+    return is_queue_family_supported
+        && is_device_extension_supported
+        && is_swapchain_supported
+        && is_support_sampler_anisotropy;
 }
 
 pub fn create_logical_device(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
+    device_extension: &DeviceExtension,
     surface_stuff: &SurfaceStuff,
 ) -> (ash::Device, QueueFamilyIndices) {
     let indices = find_queue_family(instance, physical_device, surface_stuff);
 
     let mut unique_queue_families = HashSet::new();
-
     unique_queue_families.insert(indices.graphics_family.unwrap());
     unique_queue_families.insert(indices.present_family.unwrap());
 
     let queue_priorities = [1.0_f32];
     let mut queue_create_infos = vec![];
-
     for &queue_family in unique_queue_families.iter() {
         let queue_create_info = vk::DeviceQueueCreateInfo {
             s_type: vk::StructureType::DEVICE_QUEUE_CREATE_INFO,
@@ -171,6 +181,7 @@ pub fn create_logical_device(
     }
 
     let physical_device_features = vk::PhysicalDeviceFeatures {
+        sampler_anisotropy: vk::TRUE,
         ..Default::default()
     };
 
@@ -184,7 +195,7 @@ pub fn create_logical_device(
         .map(|layer_name| layer_name.as_ptr())
         .collect();
 
-    let enable_extension_names = [ash::extensions::khr::Swapchain::name().as_ptr()];
+    let enable_extension_names = device_extension.get_extensions_raw_names();
 
     let device_create_info = vk::DeviceCreateInfo {
         s_type: vk::StructureType::DEVICE_CREATE_INFO,
@@ -258,6 +269,7 @@ fn find_queue_family(
 fn check_device_extension_support(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
+    device_extension: &DeviceExtension,
 ) -> bool {
     let available_extensions = unsafe {
         instance
@@ -273,7 +285,7 @@ fn check_device_extension_support(
     }
 
     let mut required_extensions = HashSet::new();
-    for extension in DEVICE_EXTENSIONS.names.iter() {
+    for extension in device_extension.names.iter() {
         required_extensions.insert(extension.to_string());
     }
 
@@ -314,6 +326,7 @@ pub fn create_swapchain(
     instance: &ash::Instance,
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
+    window: &winit::window::Window,
     surface_stuff: &SurfaceStuff,
     queue_family: &QueueFamilyIndices,
 ) -> SwapChainStuff {
@@ -321,7 +334,7 @@ pub fn create_swapchain(
 
     let surface_format = choose_swapchain_format(&swapchain_support.formats);
     let present_mode = choose_swapchain_present_mode(&swapchain_support.present_modes);
-    let extent = choose_swapchain_extent(&swapchain_support.capabilities);
+    let extent = choose_swapchain_extent(&swapchain_support.capabilities, window);
 
     let image_count = swapchain_support.capabilities.min_image_count + 1;
     let image_count = if swapchain_support.capabilities.max_image_count > 0 {
@@ -411,20 +424,24 @@ fn choose_swapchain_present_mode(
     vk::PresentModeKHR::FIFO
 }
 
-fn choose_swapchain_extent(capabilities: &vk::SurfaceCapabilitiesKHR) -> vk::Extent2D {
+fn choose_swapchain_extent(
+    capabilities: &vk::SurfaceCapabilitiesKHR,
+    window: &winit::window::Window,
+) -> vk::Extent2D {
     if capabilities.current_extent.width != u32::MAX {
         capabilities.current_extent
     } else {
         use num::clamp;
 
+        let window_size = window.inner_size();
         vk::Extent2D {
             width: clamp(
-                WINDOW_WIDTH,
+                window_size.width as u32,
                 capabilities.min_image_extent.width,
                 capabilities.max_image_extent.width,
             ),
             height: clamp(
-                WINDOW_HEIGHT,
+                window_size.height as u32,
                 capabilities.min_image_extent.height,
                 capabilities.max_image_extent.height,
             ),

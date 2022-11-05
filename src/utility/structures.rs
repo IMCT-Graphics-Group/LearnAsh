@@ -1,7 +1,15 @@
+use std::os::raw::c_char;
+
 use ash::vk;
 
 pub struct DeviceExtension {
     pub names: [&'static str; 1],
+}
+
+impl DeviceExtension {
+    pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
+        [ash::extensions::khr::Swapchain::name().as_ptr()]
+    }
 }
 
 pub struct SurfaceStuff {

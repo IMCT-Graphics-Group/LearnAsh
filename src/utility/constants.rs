@@ -14,6 +14,7 @@ pub const VALIDATION: ValidationInfo = ValidationInfo {
     is_enable: true,
     required_validation_layers: ["VK_LAYER_KHRONOS_validation"],
 };
+pub const APPLICATION_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
 pub const API_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
 pub const ENGINE_VERSION: u32 = vk::make_api_version(0, 1, 0, 0);
 pub const DEVICE_EXTENSIONS: DeviceExtension = DeviceExtension {
