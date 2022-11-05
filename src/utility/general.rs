@@ -1,4 +1,4 @@
-use crate::{utility, utility::constants::*, utility::structures::*};
+use crate::{utility, utility::constants::*, utility::platforms, utility::structures::*};
 
 use std::{
     collections::HashSet,
@@ -8,8 +8,6 @@ use std::{
 };
 
 use ash::vk;
-
-use super::platforms;
 
 pub fn create_instance(entry: &ash::Entry) -> ash::Instance {
     if VALIDATION.is_enable && utility::debug::check_validation_layer_support(entry) == false {
