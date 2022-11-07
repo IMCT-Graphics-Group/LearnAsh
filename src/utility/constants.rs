@@ -1,3 +1,5 @@
+use std::os::raw::c_char;
+
 use crate::utility::debug::ValidationInfo;
 use crate::utility::structures::*;
 
@@ -21,4 +23,25 @@ pub const DEVICE_EXTENSIONS: DeviceExtension = DeviceExtension {
     names: ["VK_KHR_swapchain"],
 };
 
+impl DeviceExtension {
+    pub fn get_extensions_raw_names(&self) -> [*const c_char; 1] {
+        [ash::extensions::khr::Swapchain::name().as_ptr()]
+    }
+}
+
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+pub const VERTICES_DATA: [Vertex; 3] = [
+    Vertex {
+        pos: [0.0, -0.5],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        pos: [0.5, 0.5],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        pos: [-0.5, 0.5],
+        color: [0.0, 0.0, 1.0],
+    },
+];

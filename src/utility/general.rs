@@ -9,28 +9,39 @@ use std::{
 
 use ash::vk;
 
-pub fn create_instance(entry: &ash::Entry) -> ash::Instance {
-    if VALIDATION.is_enable && utility::debug::check_validation_layer_support(entry) == false {
+use super::debug::ValidationInfo;
+
+pub fn create_instance(
+    entry: &ash::Entry,
+    window_title: &str,
+    validation: &ValidationInfo,
+) -> ash::Instance {
+    if validation.is_enable
+        && utility::debug::check_validation_layer_support(
+            entry,
+            &validation.required_validation_layers.to_vec(),
+        ) == false
+    {
         panic!("Validation layers requested, but not available!");
     }
 
-    let app_name = CString::new(WINDOW_TITLE).unwrap();
+    let app_name = CString::new(window_title).unwrap();
     let engine_name = CString::new("Vulkan Engine").unwrap();
     let app_info = vk::ApplicationInfo {
         s_type: vk::StructureType::APPLICATION_INFO,
-        p_application_name: app_name.as_ptr(),
-        p_engine_name: engine_name.as_ptr(),
         p_next: ptr::null(),
-        api_version: API_VERSION,
-        engine_version: ENGINE_VERSION,
+        p_application_name: app_name.as_ptr(),
         application_version: APPLICATION_VERSION,
+        p_engine_name: engine_name.as_ptr(),
+        engine_version: ENGINE_VERSION,
+        api_version: API_VERSION,
     };
 
     let debug_utils_create_info = utility::debug::populate_debug_messenger_create_info();
 
     let extension_names = utility::platforms::required_extension_names();
 
-    let required_validation_layer_raw_names: Vec<CString> = VALIDATION
+    let required_validation_layer_raw_names: Vec<CString> = validation
         .required_validation_layers
         .iter()
         .map(|layer_name| CString::new(*layer_name).unwrap())
@@ -42,19 +53,19 @@ pub fn create_instance(entry: &ash::Entry) -> ash::Instance {
 
     let create_info = vk::InstanceCreateInfo {
         s_type: vk::StructureType::INSTANCE_CREATE_INFO,
-        p_next: if VALIDATION.is_enable {
+        p_next: if validation.is_enable {
             &debug_utils_create_info as *const vk::DebugUtilsMessengerCreateInfoEXT as *const c_void
         } else {
             ptr::null()
         },
         flags: vk::InstanceCreateFlags::empty(),
         p_application_info: &app_info,
-        pp_enabled_layer_names: if VALIDATION.is_enable {
+        pp_enabled_layer_names: if validation.is_enable {
             layer_names.as_ptr()
         } else {
             ptr::null()
         },
-        enabled_layer_count: if VALIDATION.is_enable {
+        enabled_layer_count: if validation.is_enable {
             layer_names.len()
         } else {
             0
@@ -76,6 +87,8 @@ pub fn create_surface(
     entry: &ash::Entry,
     instance: &ash::Instance,
     window: &winit::window::Window,
+    screen_width: u32,
+    screen_height: u32,
 ) -> SurfaceStuff {
     let surface = unsafe {
         platforms::create_surface(entry, instance, window).expect("Failed to create surface.")
@@ -85,8 +98,8 @@ pub fn create_surface(
     SurfaceStuff {
         surface_loader,
         surface,
-        screen_width: WINDOW_WIDTH,
-        screen_height: WINDOW_HEIGHT,
+        screen_width,
+        screen_height,
     }
 }
 
@@ -155,6 +168,7 @@ fn is_physical_device_suitable(
 pub fn create_logical_device(
     instance: &ash::Instance,
     physical_device: vk::PhysicalDevice,
+    validation: &ValidationInfo,
     device_extension: &DeviceExtension,
     surface_stuff: &SurfaceStuff,
 ) -> (ash::Device, QueueFamilyIndices) {
@@ -183,7 +197,7 @@ pub fn create_logical_device(
         ..Default::default()
     };
 
-    let required_validation_layer_raw_names: Vec<CString> = VALIDATION
+    let required_validation_layer_raw_names: Vec<CString> = validation
         .required_validation_layers
         .iter()
         .map(|layer_name| CString::new(*layer_name).unwrap())
@@ -201,12 +215,12 @@ pub fn create_logical_device(
         flags: vk::DeviceCreateFlags::empty(),
         queue_create_info_count: queue_create_infos.len() as u32,
         p_queue_create_infos: queue_create_infos.as_ptr(),
-        enabled_layer_count: if VALIDATION.is_enable {
+        enabled_layer_count: if validation.is_enable {
             enable_layer_names.len()
         } else {
             0
         } as u32,
-        pp_enabled_layer_names: if VALIDATION.is_enable {
+        pp_enabled_layer_names: if validation.is_enable {
             enable_layer_names.as_ptr()
         } else {
             ptr::null()
@@ -538,14 +552,17 @@ pub fn create_graphics_pipeline(
         },
     ];
 
+    let binding_description = Vertex::get_binding_descriptions();
+    let attribute_description = Vertex::get_attribute_descriptions();
+
     let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineVertexInputStateCreateFlags::empty(),
-        vertex_attribute_description_count: 0,
-        p_vertex_attribute_descriptions: ptr::null(),
-        vertex_binding_description_count: 0,
-        p_vertex_binding_descriptions: ptr::null(),
+        vertex_attribute_description_count: attribute_description.len() as u32,
+        p_vertex_attribute_descriptions: attribute_description.as_ptr(),
+        vertex_binding_description_count: binding_description.len() as u32,
+        p_vertex_binding_descriptions: binding_description.as_ptr(),
     };
     let vertex_input_assembly_state_create_info = vk::PipelineInputAssemblyStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -850,6 +867,88 @@ pub fn create_command_pool(
     }
 }
 
+pub fn create_vertex_buffer(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+) -> (vk::Buffer, vk::DeviceMemory) {
+    let vertex_buffer_create_info = vk::BufferCreateInfo {
+        s_type: vk::StructureType::BUFFER_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::BufferCreateFlags::empty(),
+        size: std::mem::size_of_val(&VERTICES_DATA) as u64,
+        usage: vk::BufferUsageFlags::VERTEX_BUFFER,
+        sharing_mode: vk::SharingMode::EXCLUSIVE,
+        queue_family_index_count: 0,
+        p_queue_family_indices: ptr::null(),
+    };
+
+    let vertex_buffer = unsafe {
+        device
+            .create_buffer(&vertex_buffer_create_info, None)
+            .expect("Failed to create Vertex Buffer")
+    };
+
+    let mem_requirements = unsafe { device.get_buffer_memory_requirements(vertex_buffer) };
+    let mem_properties = unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let required_memory_flags: vk::MemoryPropertyFlags =
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+    let memory_type = find_memory_type(
+        mem_requirements.memory_type_bits,
+        required_memory_flags,
+        mem_properties,
+    );
+
+    let allocate_info = vk::MemoryAllocateInfo {
+        s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
+        p_next: ptr::null(),
+        allocation_size: mem_requirements.size,
+        memory_type_index: memory_type,
+    };
+
+    let vertex_buffer_memory = unsafe {
+        device
+            .allocate_memory(&allocate_info, None)
+            .expect("Failed to allocate vertex buffer memory!")
+    };
+
+    unsafe {
+        device
+            .bind_buffer_memory(vertex_buffer, vertex_buffer_memory, 0)
+            .expect("Failed to bind Buffer!");
+
+        let data_ptr = device
+            .map_memory(
+                vertex_buffer_memory,
+                0,
+                vertex_buffer_create_info.size,
+                vk::MemoryMapFlags::empty(),
+            )
+            .expect("Failed to Map Memory") as *mut Vertex;
+
+        data_ptr.copy_from_nonoverlapping(VERTICES_DATA.as_ptr(), VERTICES_DATA.len());
+
+        device.unmap_memory(vertex_buffer_memory);
+    }
+
+    (vertex_buffer, vertex_buffer_memory)
+}
+
+fn find_memory_type(
+    type_filter: u32,
+    required_properties: vk::MemoryPropertyFlags,
+    mem_properties: vk::PhysicalDeviceMemoryProperties,
+) -> u32 {
+    for (i, memory_type) in mem_properties.memory_types.iter().enumerate() {
+        if (type_filter & (1 << i)) > 0 && memory_type.property_flags.contains(required_properties)
+        {
+            return i as u32;
+        }
+    }
+
+    panic!("Failed to find suitable memory type!")
+}
+
 pub fn create_command_buffers(
     device: &ash::Device,
     command_pool: vk::CommandPool,
@@ -929,7 +1028,7 @@ pub fn create_command_buffers(
     command_buffers
 }
 
-pub fn create_sync_objects(device: &ash::Device) -> SyncObjects {
+pub fn create_sync_objects(device: &ash::Device, max_frames_in_flight: usize) -> SyncObjects {
     let mut sync_objects = SyncObjects {
         image_available_semaphores: vec![],
         render_finished_semaphores: vec![],
@@ -948,7 +1047,7 @@ pub fn create_sync_objects(device: &ash::Device) -> SyncObjects {
         flags: vk::FenceCreateFlags::SIGNALED,
     };
 
-    for _ in 0..MAX_FRAMES_IN_FLIGHT {
+    for _ in 0..max_frames_in_flight {
         unsafe {
             let image_available_semaphore = device
                 .create_semaphore(&semaphore_create_info, None)

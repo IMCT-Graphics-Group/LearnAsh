@@ -40,6 +40,9 @@ struct VulkanRenderer {
     render_pass: vk::RenderPass,
     graphics_pipeline: vk::Pipeline,
 
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
+
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
 
@@ -53,19 +56,27 @@ struct VulkanRenderer {
 
 impl VulkanRenderer {
     pub fn new(event_loop: &winit::event_loop::EventLoop<()>) -> VulkanRenderer {
-        let window = utility::window::init_window(event_loop);
+        let window =
+            utility::window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = ash::Entry::linked();
-        let instance = utility::general::create_instance(&entry);
-        let surface_stuff = utility::general::create_surface(&entry, &instance, &window);
+        let instance = utility::general::create_instance(&entry, WINDOW_TITLE, &VALIDATION);
+        let surface_stuff = utility::general::create_surface(
+            &entry,
+            &instance,
+            &window,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+        );
         let (debug_utils_loader, debug_messenger) =
-            utility::debug::setup_debug_utils(&entry, &instance);
+            utility::debug::setup_debug_utils(VALIDATION.is_enable, &entry, &instance);
 
         let physical_device =
             utility::general::pick_physcial_device(&instance, &surface_stuff, &DEVICE_EXTENSIONS);
         let (device, queue_family) = utility::general::create_logical_device(
             &instance,
             physical_device,
+            &VALIDATION,
             &DEVICE_EXTENSIONS,
             &surface_stuff,
         );
@@ -102,6 +113,8 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = utility::general::create_command_pool(&device, &queue_family);
+        let (vertex_buffer, vertex_buffer_memory) =
+            utility::general::create_vertex_buffer(&instance, &device, physical_device);
         let command_buffers = utility::general::create_command_buffers(
             &device,
             command_pool,
@@ -110,7 +123,7 @@ impl VulkanRenderer {
             render_pass,
             swapchain_stuff.swapchain_extent,
         );
-        let sync_objects = utility::general::create_sync_objects(&device);
+        let sync_objects = utility::general::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
         VulkanRenderer {
             window,
@@ -140,6 +153,9 @@ impl VulkanRenderer {
             pipeline_layout,
             render_pass,
             graphics_pipeline,
+
+            vertex_buffer,
+            vertex_buffer_memory,
 
             command_pool,
             command_buffers,
@@ -335,6 +351,9 @@ impl Drop for VulkanRenderer {
             }
 
             self.cleanup_swapchain();
+
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
 
             self.device.destroy_command_pool(self.command_pool, None);
 

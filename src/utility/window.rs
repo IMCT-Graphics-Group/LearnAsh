@@ -1,11 +1,12 @@
-use crate::utility::constants::*;
-
-use winit::event_loop::EventLoop;
-
-pub fn init_window(event_loop: &EventLoop<()>) -> winit::window::Window {
+pub fn init_window(
+    event_loop: &winit::event_loop::EventLoop<()>,
+    title: &str,
+    width: u32,
+    height: u32,
+) -> winit::window::Window {
     winit::window::WindowBuilder::new()
-        .with_title(WINDOW_TITLE)
-        .with_inner_size(winit::dpi::LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+        .with_title(title)
+        .with_inner_size(winit::dpi::LogicalSize::new(width, height))
         .build(event_loop)
         .expect("Failed to create window.")
 }
