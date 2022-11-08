@@ -42,6 +42,8 @@ struct VulkanRenderer {
 
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -113,8 +115,20 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = utility::general::create_command_pool(&device, &queue_family);
-        let (vertex_buffer, vertex_buffer_memory) =
-            utility::general::create_vertex_buffer(&instance, &device, physical_device);
+        let (vertex_buffer, vertex_buffer_memory) = utility::general::create_vertex_buffer(
+            &instance,
+            &device,
+            physical_device,
+            command_pool,
+            graphics_queue,
+        );
+        let (index_buffer, index_buffer_memory) = utility::general::create_index_buffer(
+            &instance,
+            &device,
+            physical_device,
+            command_pool,
+            graphics_queue,
+        );
         let command_buffers = utility::general::create_command_buffers(
             &device,
             command_pool,
@@ -122,6 +136,8 @@ impl VulkanRenderer {
             &swapchain_framebuffers,
             render_pass,
             swapchain_stuff.swapchain_extent,
+            vertex_buffer,
+            index_buffer,
         );
         let sync_objects = utility::general::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
@@ -156,6 +172,8 @@ impl VulkanRenderer {
 
             vertex_buffer,
             vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
 
             command_pool,
             command_buffers,
@@ -316,6 +334,8 @@ impl VulkanRenderer {
             &self.swapchain_framebuffers,
             self.render_pass,
             self.swapchain_extent,
+            self.vertex_buffer,
+            self.index_buffer,
         );
     }
 
@@ -351,6 +371,9 @@ impl Drop for VulkanRenderer {
             }
 
             self.cleanup_swapchain();
+
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
 
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_buffer_memory, None);
