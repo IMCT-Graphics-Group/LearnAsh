@@ -1,4 +1,5 @@
 use ash::vk;
+use cgmath::Matrix4;
 use memoffset::offset_of;
 
 pub struct DeviceExtension {
@@ -83,4 +84,12 @@ impl Vertex {
             },
         ]
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Debug, Copy)]
+pub struct UniformBufferObject {
+    pub model: Matrix4<f32>,
+    pub view: Matrix4<f32>,
+    pub proj: Matrix4<f32>,
 }

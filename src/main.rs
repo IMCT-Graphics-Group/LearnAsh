@@ -1,15 +1,16 @@
 use std::ptr;
 
+use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use learn_ash::{
     utility,
-    utility::{constants::*, structures::*},
+    utility::{
+        constants::*,
+        structures::*,
+        window::{ProgramProc, VulkanApp},
+    },
 };
 
 use ash::vk;
-use winit::{
-    event::{ElementState, Event, KeyboardInput, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-};
 
 struct VulkanRenderer {
     window: winit::window::Window,
@@ -28,22 +29,33 @@ struct VulkanRenderer {
     graphics_queue: vk::Queue,
     present_queue: vk::Queue,
 
-    swapchian_loader: ash::extensions::khr::Swapchain,
+    swapchain_loader: ash::extensions::khr::Swapchain,
     swapchain: vk::SwapchainKHR,
-    swapchian_images: Vec<vk::Image>,
+    swapchain_images: Vec<vk::Image>,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_imageviews: Vec<vk::ImageView>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
 
-    pipeline_layout: vk::PipelineLayout,
     render_pass: vk::RenderPass,
+    ubo_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
+
+    texture_image: vk::Image,
+    texture_image_memory: vk::DeviceMemory,
 
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
     index_buffer_memory: vk::DeviceMemory,
+
+    uniform_transform: UniformBufferObject,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_sets: Vec<vk::DescriptorSet>,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -75,6 +87,8 @@ impl VulkanRenderer {
 
         let physical_device =
             utility::general::pick_physcial_device(&instance, &surface_stuff, &DEVICE_EXTENSIONS);
+        let physical_device_memory_properties =
+            unsafe { instance.get_physical_device_memory_properties(physical_device) };
         let (device, queue_family) = utility::general::create_logical_device(
             &instance,
             physical_device,
@@ -103,10 +117,12 @@ impl VulkanRenderer {
         );
         let render_pass =
             utility::general::create_render_pass(&device, swapchain_stuff.swapchain_format);
+        let ubo_layout = utility::general::create_descriptor_set_layout(&device);
         let (graphics_pipeline, pipeline_layout) = utility::general::create_graphics_pipeline(
             &device,
             render_pass,
             swapchain_stuff.swapchain_extent,
+            ubo_layout,
         );
         let swapchain_framebuffers = utility::general::create_framebuffers(
             &device,
@@ -115,6 +131,7 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = utility::general::create_command_pool(&device, &queue_family);
+        let(texture_image, texture_image_memory)=
         let (vertex_buffer, vertex_buffer_memory) = utility::general::create_vertex_buffer(
             &instance,
             &device,
@@ -129,6 +146,22 @@ impl VulkanRenderer {
             command_pool,
             graphics_queue,
         );
+        let (uniform_buffers, uniform_buffers_memory) = utility::general::create_uniform_buffers(
+            &device,
+            &physical_device_memory_properties,
+            swapchain_stuff.swapchain_images.len(),
+        );
+        let descriptor_pool = utility::general::create_descriptor_pool(
+            &device,
+            swapchain_stuff.swapchain_images.len(),
+        );
+        let descriptor_sets = utility::general::create_descriptor_sets(
+            &device,
+            descriptor_pool,
+            ubo_layout,
+            &uniform_buffers,
+            swapchain_stuff.swapchain_images.len(),
+        );
         let command_buffers = utility::general::create_command_buffers(
             &device,
             command_pool,
@@ -138,6 +171,8 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
             vertex_buffer,
             index_buffer,
+            pipeline_layout,
+            &descriptor_sets,
         );
         let sync_objects = utility::general::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
@@ -158,15 +193,16 @@ impl VulkanRenderer {
             graphics_queue,
             present_queue,
 
-            swapchian_loader: swapchain_stuff.swapchain_loader,
+            swapchain_loader: swapchain_stuff.swapchain_loader,
             swapchain: swapchain_stuff.swapchain,
             swapchain_format: swapchain_stuff.swapchain_format,
-            swapchian_images: swapchain_stuff.swapchain_images,
+            swapchain_images: swapchain_stuff.swapchain_images,
             swapchain_extent: swapchain_stuff.swapchain_extent,
             swapchain_imageviews,
             swapchain_framebuffers,
 
             pipeline_layout,
+            ubo_layout,
             render_pass,
             graphics_pipeline,
 
@@ -174,6 +210,27 @@ impl VulkanRenderer {
             vertex_buffer_memory,
             index_buffer,
             index_buffer_memory,
+
+            uniform_transform: UniformBufferObject {
+                model: Matrix4::<f32>::identity(),
+                view: Matrix4::look_at_rh(
+                    Point3::new(2.0, 2.0, 2.0),
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vector3::new(0.0, 0.0, 1.0),
+                ),
+                proj: cgmath::perspective(
+                    Deg(45.0),
+                    swapchain_stuff.swapchain_extent.width as f32
+                        / swapchain_stuff.swapchain_extent.height as f32,
+                    0.1,
+                    10.0,
+                ),
+            },
+            uniform_buffers,
+            uniform_buffers_memory,
+
+            descriptor_pool,
+            descriptor_sets,
 
             command_pool,
             command_buffers,
@@ -186,8 +243,84 @@ impl VulkanRenderer {
             is_framebuffer_resized: false,
         }
     }
+}
 
-    fn draw_frame(&mut self) {
+impl VulkanRenderer {
+    fn update_uniform_buffer(&mut self, current_image: usize, delta_time: f32) {
+        self.uniform_transform.model =
+            Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
+                * self.uniform_transform.model;
+
+        let ubos = [self.uniform_transform.clone()];
+
+        let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
+
+        unsafe {
+            let data_ptr =
+                self.device
+                    .map_memory(
+                        self.uniform_buffers_memory[current_image],
+                        0,
+                        buffer_size,
+                        vk::MemoryMapFlags::empty(),
+                    )
+                    .expect("Failed to Map Memory") as *mut UniformBufferObject;
+
+            data_ptr.copy_from_nonoverlapping(ubos.as_ptr(), ubos.len());
+
+            self.device
+                .unmap_memory(self.uniform_buffers_memory[current_image]);
+        }
+    }
+}
+
+impl Drop for VulkanRenderer {
+    fn drop(&mut self) {
+        unsafe {
+            for i in 0..MAX_FRAMES_IN_FLIGHT {
+                self.device
+                    .destroy_semaphore(self.image_available_semaphores[i], None);
+                self.device
+                    .destroy_semaphore(self.render_finished_semaphores[i], None);
+                self.device.destroy_fence(self.in_flight_fences[i], None);
+            }
+
+            self.cleanup_swapchain();
+
+            self.device
+                .destroy_descriptor_pool(self.descriptor_pool, None);
+
+            for i in 0..self.uniform_buffers.len() {
+                self.device.destroy_buffer(self.uniform_buffers[i], None);
+                self.device
+                    .free_memory(self.uniform_buffers_memory[i], None);
+            }
+
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
+
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+
+            self.device
+                .destroy_descriptor_set_layout(self.ubo_layout, None);
+
+            self.device.destroy_command_pool(self.command_pool, None);
+
+            self.device.destroy_device(None);
+            self.surface_loader.destroy_surface(self.surface, None);
+
+            if VALIDATION.is_enable {
+                self.debug_utils_loader
+                    .destroy_debug_utils_messenger(self.debug_messenger, None);
+            }
+            self.instance.destroy_instance(None);
+        }
+    }
+}
+
+impl VulkanApp for VulkanRenderer {
+    fn draw_frame(&mut self, delta_time: f32) {
         let wait_fences = [self.in_flight_fences[self.current_frame]];
 
         unsafe {
@@ -197,7 +330,7 @@ impl VulkanRenderer {
         }
 
         let (image_index, _is_sub_optimal) = unsafe {
-            let result = self.swapchian_loader.acquire_next_image(
+            let result = self.swapchain_loader.acquire_next_image(
                 self.swapchain,
                 std::u64::MAX,
                 self.image_available_semaphores[self.current_frame],
@@ -214,6 +347,8 @@ impl VulkanRenderer {
                 },
             }
         };
+
+        self.update_uniform_buffer(image_index as usize, delta_time);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -245,7 +380,7 @@ impl VulkanRenderer {
                 .expect("Failed to execute queue submit.");
         }
 
-        let swapchians = [self.swapchain];
+        let swapchains = [self.swapchain];
 
         let present_info = vk::PresentInfoKHR {
             s_type: vk::StructureType::PRESENT_INFO_KHR,
@@ -253,15 +388,16 @@ impl VulkanRenderer {
             wait_semaphore_count: 1,
             p_wait_semaphores: signal_semaphores.as_ptr(),
             swapchain_count: 1,
-            p_swapchains: swapchians.as_ptr(),
+            p_swapchains: swapchains.as_ptr(),
             p_image_indices: &image_index,
             p_results: ptr::null_mut(),
         };
 
         let result = unsafe {
-            self.swapchian_loader
+            self.swapchain_loader
                 .queue_present(self.present_queue, &present_info)
         };
+
         let is_resized = match result {
             Ok(_) => self.is_framebuffer_resized,
             Err(vk_result) => match vk_result {
@@ -285,11 +421,8 @@ impl VulkanRenderer {
             screen_height: WINDOW_HEIGHT,
         };
 
-        unsafe {
-            self.device
-                .device_wait_idle()
-                .expect("Failed to wait device idle!")
-        };
+        self.wait_device_idle();
+
         self.cleanup_swapchain();
 
         let swapchain_stuff = utility::general::create_swapchain(
@@ -300,16 +433,16 @@ impl VulkanRenderer {
             &surface_stuff,
             &self.queue_family,
         );
-        self.swapchian_loader = swapchain_stuff.swapchain_loader;
+        self.swapchain_loader = swapchain_stuff.swapchain_loader;
         self.swapchain = swapchain_stuff.swapchain;
-        self.swapchian_images = swapchain_stuff.swapchain_images;
+        self.swapchain_images = swapchain_stuff.swapchain_images;
         self.swapchain_format = swapchain_stuff.swapchain_format;
         self.swapchain_extent = swapchain_stuff.swapchain_extent;
 
         self.swapchain_imageviews = utility::general::create_image_views(
             &self.device,
             self.swapchain_format,
-            &self.swapchian_images,
+            &self.swapchain_images,
         );
         self.render_pass =
             utility::general::create_render_pass(&self.device, self.swapchain_format);
@@ -317,6 +450,7 @@ impl VulkanRenderer {
             &self.device,
             self.render_pass,
             swapchain_stuff.swapchain_extent,
+            self.ubo_layout,
         );
         self.graphics_pipeline = graphics_pipeline;
         self.pipeline_layout = pipeline_layout;
@@ -336,6 +470,8 @@ impl VulkanRenderer {
             self.swapchain_extent,
             self.vertex_buffer,
             self.index_buffer,
+            self.pipeline_layout,
+            &self.descriptor_sets,
         );
     }
 
@@ -353,84 +489,29 @@ impl VulkanRenderer {
             for &image_view in self.swapchain_imageviews.iter() {
                 self.device.destroy_image_view(image_view, None);
             }
-            self.swapchian_loader
+            self.swapchain_loader
                 .destroy_swapchain(self.swapchain, None);
         }
     }
-}
 
-impl Drop for VulkanRenderer {
-    fn drop(&mut self) {
+    fn wait_device_idle(&self) {
         unsafe {
-            for i in 0..MAX_FRAMES_IN_FLIGHT {
-                self.device
-                    .destroy_semaphore(self.image_available_semaphores[i], None);
-                self.device
-                    .destroy_semaphore(self.render_finished_semaphores[i], None);
-                self.device.destroy_fence(self.in_flight_fences[i], None);
-            }
-
-            self.cleanup_swapchain();
-
-            self.device.destroy_buffer(self.index_buffer, None);
-            self.device.free_memory(self.index_buffer_memory, None);
-
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
-
-            self.device.destroy_command_pool(self.command_pool, None);
-
-            self.device.destroy_device(None);
-            self.surface_loader.destroy_surface(self.surface, None);
-
-            if VALIDATION.is_enable {
-                self.debug_utils_loader
-                    .destroy_debug_utils_messenger(self.debug_messenger, None);
-            }
-            self.instance.destroy_instance(None);
-        }
+            self.device
+                .device_wait_idle()
+                .expect("Failed to wait device idle!")
+        };
     }
-}
 
-impl VulkanRenderer {
-    pub fn main_loop(mut self, event_loop: EventLoop<()>) {
-        event_loop.run(move |event, _, control_flow| match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                WindowEvent::KeyboardInput { input, .. } => match input {
-                    KeyboardInput {
-                        virtual_keycode,
-                        state,
-                        ..
-                    } => match (virtual_keycode, state) {
-                        (Some(WINDOW_KEYCODE_EXIT), ElementState::Pressed) => {
-                            *control_flow = ControlFlow::Exit
-                        }
-                        _ => {}
-                    },
-                },
-                _ => {}
-            },
-            Event::MainEventsCleared => {
-                self.window.request_redraw();
-            }
-            Event::RedrawRequested(_window_id) => {
-                self.draw_frame();
-            }
-            Event::LoopDestroyed => {
-                unsafe {
-                    self.device
-                        .device_wait_idle()
-                        .expect("Failed to wait device idle!")
-                };
-            }
-            _ => (),
-        });
+    fn resize_framebuffer(&mut self) {
+        self.is_framebuffer_resized = true;
+    }
+
+    fn window_ref(&self) -> &winit::window::Window {
+        &self.window
     }
 }
 fn main() {
-    let event_loop = EventLoop::new();
-
-    let vulkan_renderer = VulkanRenderer::new(&event_loop);
-    vulkan_renderer.main_loop(event_loop);
+    let program_proc = ProgramProc::new();
+    let vulkan_renderer = VulkanRenderer::new(&program_proc.event_loop);
+    program_proc.main_loop(vulkan_renderer);
 }

@@ -1,5 +1,6 @@
 pub mod constants;
 pub mod debug;
+pub mod fps_limiter;
 pub mod general;
 pub mod platforms;
 pub mod structures;

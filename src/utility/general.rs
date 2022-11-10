@@ -522,6 +522,7 @@ pub fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     swapchain_extent: vk::Extent2D,
+    ubo_set_layout: vk::DescriptorSetLayout,
 ) -> (vk::Pipeline, vk::PipelineLayout) {
     let vert_shader_code = utility::tools::read_shader_code(Path::new("shaders/spv/vert.spv"));
     let frag_shader_code = utility::tools::read_shader_code(Path::new("shaders/spv/frag.spv"));
@@ -680,12 +681,14 @@ pub fn create_graphics_pipeline(
         blend_constants: [0.0, 0.0, 0.0, 0.0],
     };
 
+    let set_layouts = [ubo_set_layout];
+
     let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
         s_type: vk::StructureType::PIPELINE_LAYOUT_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineLayoutCreateFlags::empty(),
-        set_layout_count: 0,
-        p_set_layouts: ptr::null(),
+        set_layout_count: set_layouts.len() as u32,
+        p_set_layouts: set_layouts.as_ptr(),
         push_constant_range_count: 0,
         p_push_constant_ranges: ptr::null(),
     };
@@ -812,6 +815,55 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
             .create_render_pass(&renderpass_create_info, None)
             .expect("Failed to create render pass!")
     }
+}
+
+pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
+    let ubo_layout_bindings = [vk::DescriptorSetLayoutBinding {
+        binding: 0,
+        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: vk::ShaderStageFlags::VERTEX,
+        p_immutable_samplers: ptr::null(),
+    }];
+
+    let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::DescriptorSetLayoutCreateFlags::empty(),
+        binding_count: ubo_layout_bindings.len() as u32,
+        p_bindings: ubo_layout_bindings.as_ptr(),
+    };
+
+    unsafe {
+        device
+            .create_descriptor_set_layout(&ubo_layout_create_info, None)
+            .expect("Failed to create Descriptor Set Layout!")
+    }
+}
+
+pub fn create_uniform_buffers(
+    device: &ash::Device,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    swapchain_image_count: usize,
+) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>) {
+    let buffer_size = std::mem::size_of::<UniformBufferObject>();
+
+    let mut uniform_buffers = vec![];
+    let mut uniform_buffers_memory = vec![];
+
+    for _ in 0..swapchain_image_count {
+        let (uniform_buffer, uniform_buffer_memory) = create_buffer(
+            device,
+            buffer_size as u64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            device_memory_properties,
+        );
+        uniform_buffers.push(uniform_buffer);
+        uniform_buffers_memory.push(uniform_buffer_memory)
+    }
+
+    (uniform_buffers, uniform_buffers_memory)
 }
 
 pub fn create_framebuffers(
@@ -1133,6 +1185,8 @@ pub fn create_command_buffers(
     surface_extent: vk::Extent2D,
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
+    pipeline_layout: vk::PipelineLayout,
+    descriptor_sets: &Vec<vk::DescriptorSet>,
 ) -> Vec<vk::CommandBuffer> {
     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1195,9 +1249,18 @@ pub fn create_command_buffers(
 
             let vertex_buffers = [vertex_buffer];
             let offsets = [0_u64];
+            let descriptor_sets_to_bind = [descriptor_sets[i]];
 
             device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_bind_descriptor_sets(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline_layout,
+                0,
+                &descriptor_sets_to_bind,
+                &[],
+            );
 
             device.cmd_draw_indexed(command_buffer, INDICES_DATA.len() as u32, 1, 0, 0, 0);
 
@@ -1210,6 +1273,373 @@ pub fn create_command_buffers(
     }
 
     command_buffers
+}
+
+pub fn create_descriptor_pool(
+    device: &ash::Device,
+    swapchain_images_size: usize,
+) -> vk::DescriptorPool {
+    let pool_sizes = [vk::DescriptorPoolSize {
+        ty: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: swapchain_images_size as u32,
+    }];
+
+    let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_POOL_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::DescriptorPoolCreateFlags::empty(),
+        max_sets: swapchain_images_size as u32,
+        pool_size_count: pool_sizes.len() as u32,
+        p_pool_sizes: pool_sizes.as_ptr(),
+    };
+
+    unsafe {
+        device
+            .create_descriptor_pool(&descriptor_pool_create_info, None)
+            .expect("Failed to create Descriptor Pool!")
+    }
+}
+
+pub fn create_descriptor_sets(
+    device: &ash::Device,
+    descriptor_pool: vk::DescriptorPool,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    uniform_buffers: &Vec<vk::Buffer>,
+    swapchain_images_size: usize,
+) -> Vec<vk::DescriptorSet> {
+    let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
+    for _ in 0..swapchain_images_size {
+        layouts.push(descriptor_set_layout);
+    }
+
+    let descriptor_set_allocate_info = vk::DescriptorSetAllocateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
+        p_next: ptr::null(),
+        descriptor_pool,
+        descriptor_set_count: swapchain_images_size as u32,
+        p_set_layouts: layouts.as_ptr(),
+    };
+
+    let descriptor_sets = unsafe {
+        device
+            .allocate_descriptor_sets(&descriptor_set_allocate_info)
+            .expect("Failed to allocate descriptor sets!")
+    };
+
+    for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
+        let descriptor_buffer_info = [vk::DescriptorBufferInfo {
+            buffer: uniform_buffers[i],
+            offset: 0,
+            range: std::mem::size_of::<UniformBufferObject>() as u64,
+        }];
+
+        let descriptor_write_sets = [vk::WriteDescriptorSet {
+            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+            p_next: ptr::null(),
+            dst_set: descriptor_set,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            p_image_info: ptr::null(),
+            p_buffer_info: descriptor_buffer_info.as_ptr(),
+            p_texel_buffer_view: ptr::null(),
+        }];
+
+        unsafe {
+            device.update_descriptor_sets(&descriptor_write_sets, &[]);
+        }
+    }
+
+    descriptor_sets
+}
+
+pub fn create_texture_image(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    image_path: &Path,
+) -> (vk::Image, vk::DeviceMemory) {
+    let mut image_object = image::open(image_path).unwrap();
+    image_object = image_object.flipv();
+    let (image_width, image_height) = (image_object.width(), image_object.height());
+    let image_size =
+        (std::mem::size_of::<u8>() as u32 * image_width * image_height * 4) as vk::DeviceSize;
+    let image_data = match &image_object {
+        image::DynamicImage::ImageLuma8(_) | image::DynamicImage::ImageRgb8(_) => {
+            image_object.to_rgba8().into_raw()
+        }
+        image::DynamicImage::ImageLumaA8(_) | image::DynamicImage::ImageRgba8(_) => {
+            image_object.into_bytes()
+        }
+    };
+
+    if image_size <= 0 {
+        panic!("Failed to load texture image!")
+    }
+
+    let (staging_buffer, staging_buffer_memory) = create_buffer(
+        device,
+        image_size,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        device_memory_properties,
+    );
+
+    unsafe {
+        let data_ptr = device
+            .map_memory(
+                staging_buffer_memory,
+                0,
+                image_size,
+                vk::MemoryMapFlags::empty(),
+            )
+            .expect("Failed to Map Memory") as *mut u8;
+
+        data_ptr.copy_from_nonoverlapping(image_data.as_ptr(), image_data.len());
+
+        device.unmap_memory(staging_buffer_memory);
+    }
+
+    let (texture_image, texture_image_memory) = create_image(
+        device,
+        image_width,
+        image_height,
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        device_memory_properties,
+    );
+
+    transition_image_layout(
+        device,
+        command_pool,
+        submit_queue,
+        texture_image,
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageLayout::UNDEFINED,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+    );
+
+    copy_buffer_to
+}
+
+fn create_image(
+    device: &ash::Device,
+    width: u32,
+    height: u32,
+    format: vk::Format,
+    tiling: vk::ImageTiling,
+    usage: vk::ImageUsageFlags,
+    required_memory_properties: vk::MemoryPropertyFlags,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+) -> (vk::Image, vk::DeviceMemory) {
+    let image_create_info = vk::ImageCreateInfo {
+        s_type: vk::StructureType::IMAGE_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::ImageCreateFlags::empty(),
+        image_type: vk::ImageType::TYPE_2D,
+        format,
+        extent: vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
+        mip_levels: 1,
+        array_layers: 1,
+        samples: vk::SampleCountFlags::TYPE_1,
+        tiling,
+        usage,
+        sharing_mode: vk::SharingMode::EXCLUSIVE,
+        queue_family_index_count: 0,
+        p_queue_family_indices: ptr::null(),
+        initial_layout: vk::ImageLayout::UNDEFINED,
+    };
+
+    let texture_image = unsafe {
+        device
+            .create_image(&image_create_info, None)
+            .expect("Failed to create Texture Image!")
+    };
+
+    let image_memory_requirement = unsafe { device.get_image_memory_requirements(texture_image) };
+    let memory_allocate_info = vk::MemoryAllocateInfo {
+        s_type: vk::StructureType::MEMORY_ALLOCATE_INFO,
+        p_next: ptr::null(),
+        allocation_size: image_memory_requirement.size,
+        memory_type_index: find_memory_type(
+            image_memory_requirement.memory_type_bits,
+            required_memory_properties,
+            device_memory_properties,
+        ),
+    };
+
+    let texture_image_memory = unsafe {
+        device
+            .allocate_memory(&memory_allocate_info, None)
+            .expect("Failed to allocate Texture Image memory!")
+    };
+
+    unsafe {
+        device
+            .bind_image_memory(texture_image, texture_image_memory, 0)
+            .expect("Failed to bind Image Memory!");
+    }
+
+    (texture_image, texture_image_memory)
+}
+
+fn transition_image_layout(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    image: vk::Image,
+    _format: vk::Format,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+) {
+    let command_buffer = begin_single_time_command(device, command_pool);
+
+    let src_access_mask;
+    let dst_access_mask;
+    let source_stage;
+    let destination_stage;
+
+    if old_layout == vk::ImageLayout::UNDEFINED
+        && new_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
+    {
+        src_access_mask = vk::AccessFlags::empty();
+        dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
+        destination_stage = vk::PipelineStageFlags::TRANSFER;
+    } else if old_layout == vk::ImageLayout::TRANSFER_DST_OPTIMAL
+        && new_layout == vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+    {
+        src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        dst_access_mask = vk::AccessFlags::SHADER_READ;
+        source_stage = vk::PipelineStageFlags::TRANSFER;
+        destination_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
+    } else {
+        panic!("Unsupported layout transition!")
+    }
+
+    let image_barriers = [vk::ImageMemoryBarrier {
+        s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
+        p_next: ptr::null(),
+        src_access_mask,
+        dst_access_mask,
+        old_layout,
+        new_layout,
+        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+        image,
+        subresource_range: vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        },
+    }];
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            source_stage,
+            destination_stage,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &image_barriers,
+        );
+    }
+
+    end_single_time_command(device, command_pool, submit_queue, command_buffer);
+}
+
+fn begin_single_time_command(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+) -> vk::CommandBuffer {
+    let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+        p_next: ptr::null(),
+        command_buffer_count: 1,
+        command_pool,
+        level: vk::CommandBufferLevel::PRIMARY,
+    };
+
+    let command_buffer = unsafe {
+        device
+            .allocate_command_buffers(&command_buffer_allocate_info)
+            .expect("Failed to allocate Command Buffers!")
+    }[0];
+
+    let command_buffer_begin_info = vk::CommandBufferBeginInfo {
+        s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+        p_next: ptr::null(),
+        p_inheritance_info: ptr::null(),
+        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+    };
+
+    unsafe {
+        device
+            .begin_command_buffer(command_buffer, &command_buffer_begin_info)
+            .expect("Failed to begin recording Command Buffer at beginning!");
+    }
+
+    command_buffer
+}
+
+fn end_single_time_command(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
+) {
+    unsafe {
+        device
+            .end_command_buffer(command_buffer)
+            .expect("Failed to record Command Buffer at Ending!");
+    }
+
+    let buffers_to_submit = [command_buffer];
+
+    let submit_infos = [vk::SubmitInfo {
+        s_type: vk::StructureType::SUBMIT_INFO,
+        p_next: ptr::null(),
+        wait_semaphore_count: 0,
+        p_wait_semaphores: ptr::null(),
+        p_wait_dst_stage_mask: ptr::null(),
+        command_buffer_count: 1,
+        p_command_buffers: buffers_to_submit.as_ptr(),
+        signal_semaphore_count: 0,
+        p_signal_semaphores: ptr::null(),
+    }];
+
+    unsafe {
+        device
+            .queue_submit(submit_queue, &submit_infos, vk::Fence::null())
+            .expect("Failed to Queue Submit!");
+        device
+            .queue_wait_idle(submit_queue)
+            .expect("Failed to wait Queue idle!");
+        device.free_command_buffers(command_pool, &buffers_to_submit);
+    }
+}
+
+fn copy_buffer_to_image(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    buffer: vk::Buffer,
+    image: vk::Image,
+    width: u32,
+    height: u32,
+) {
+    todo!()
 }
 
 pub fn create_sync_objects(device: &ash::Device, max_frames_in_flight: usize) -> SyncObjects {
