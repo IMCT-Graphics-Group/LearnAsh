@@ -8,6 +8,7 @@ use std::{
 };
 
 use ash::vk;
+use image::EncodableLayout;
 
 use super::debug::ValidationInfo;
 
@@ -461,15 +462,18 @@ fn choose_swapchain_extent(
     }
 }
 
-pub fn create_texture_image_view(device: &ash::Device, texture_image: vk::Image) -> vk::ImageView {
-    let texture_image_view = create_image_view(
+pub fn create_texture_image_view(
+    device: &ash::Device,
+    texture_image: vk::Image,
+    mip_levels: u32,
+) -> vk::ImageView {
+    create_image_view(
         device,
         texture_image,
-        vk::Format::R8G8B8A8_UNORM,
+        vk::Format::R8G8B8A8_SRGB,
         vk::ImageAspectFlags::COLOR,
-        1,
-    );
-    texture_image_view
+        mip_levels,
+    )
 }
 
 pub fn create_image_views(
@@ -593,7 +597,7 @@ pub fn create_graphics_pipeline(
         },
     ];
 
-    let binding_description = Vertex::get_binding_descriptions();
+    let binding_description = Vertex::get_binding_description();
     let attribute_description = Vertex::get_attribute_descriptions();
 
     let vertex_input_state_create_info = vk::PipelineVertexInputStateCreateInfo {
@@ -626,16 +630,6 @@ pub fn create_graphics_pipeline(
         offset: vk::Offset2D { x: 0, y: 0 },
         extent: swapchain_extent,
     }];
-
-    // let dynamic_state = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-
-    // let dynamic_state_info = vk::PipelineDynamicStateCreateInfo {
-    //     s_type: vk::StructureType::PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-    //     p_next: ptr::null(),
-    //     flags: vk::PipelineDynamicStateCreateFlags::empty(),
-    //     dynamic_state_count: dynamic_state.len() as u32,
-    //     p_dynamic_states: dynamic_state.as_ptr(),
-    // };
 
     let viewport_state_create_info = vk::PipelineViewportStateCreateInfo {
         s_type: vk::StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -857,39 +851,6 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
     }
 }
 
-pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
-    let ubo_layout_bindings = [
-        vk::DescriptorSetLayoutBinding {
-            binding: 0,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::VERTEX,
-            p_immutable_samplers: ptr::null(),
-        },
-        vk::DescriptorSetLayoutBinding {
-            binding: 1,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-            p_immutable_samplers: ptr::null(),
-        },
-    ];
-
-    let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo {
-        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        p_next: ptr::null(),
-        flags: vk::DescriptorSetLayoutCreateFlags::empty(),
-        binding_count: ubo_layout_bindings.len() as u32,
-        p_bindings: ubo_layout_bindings.as_ptr(),
-    };
-
-    unsafe {
-        device
-            .create_descriptor_set_layout(&ubo_layout_create_info, None)
-            .expect("Failed to create Descriptor Set Layout!")
-    }
-}
-
 pub fn create_uniform_buffers(
     device: &ash::Device,
     device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -968,16 +929,14 @@ pub fn create_command_pool(
     }
 }
 
-pub fn create_vertex_buffer(
-    instance: &ash::Instance,
+pub fn create_vertex_buffer<T>(
     device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
     command_pool: vk::CommandPool,
     submit_queue: vk::Queue,
+    data: &[T],
 ) -> (vk::Buffer, vk::DeviceMemory) {
-    let buffer_size = std::mem::size_of_val(&VERTICES_DATA) as vk::DeviceSize;
-    let device_memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
 
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
@@ -995,9 +954,9 @@ pub fn create_vertex_buffer(
                 buffer_size,
                 vk::MemoryMapFlags::empty(),
             )
-            .expect("Failed to Map Memory!") as *mut Vertex;
+            .expect("Failed to Map Memory!") as *mut T;
 
-        data_ptr.copy_from_nonoverlapping(VERTICES_DATA.as_ptr(), VERTICES_DATA.len());
+        data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
 
         device.unmap_memory(staging_buffer_memory);
     }
@@ -1028,15 +987,14 @@ pub fn create_vertex_buffer(
 }
 
 pub fn create_index_buffer(
-    instance: &ash::Instance,
     device: &ash::Device,
-    physical_device: vk::PhysicalDevice,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
     command_pool: vk::CommandPool,
     submit_queue: vk::Queue,
+    data: &[u32],
 ) -> (vk::Buffer, vk::DeviceMemory) {
-    let buffer_size = std::mem::size_of_val(&INDICES_DATA) as vk::DeviceSize;
-    let device_memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(physical_device) };
+    let buffer_size = std::mem::size_of_val(data) as vk::DeviceSize;
+
     let (staging_buffer, staging_buffer_memory) = create_buffer(
         device,
         buffer_size,
@@ -1055,7 +1013,7 @@ pub fn create_index_buffer(
             )
             .expect("Failed to Map Memory!") as *mut u32;
 
-        data_ptr.copy_from_nonoverlapping(INDICES_DATA.as_ptr(), INDICES_DATA.len());
+        data_ptr.copy_from_nonoverlapping(data.as_ptr(), data.len());
 
         device.unmap_memory(staging_buffer_memory);
     }
@@ -1311,7 +1269,7 @@ pub fn create_command_buffers(
                 &[],
             );
 
-            device.cmd_draw_indexed(command_buffer, INDICES_DATA.len() as u32, 1, 0, 0, 0);
+            device.cmd_draw_indexed(command_buffer, RECT_INDICES_DATA.len() as u32, 1, 0, 0, 0);
 
             device.cmd_end_render_pass(command_buffer);
 
@@ -1322,6 +1280,39 @@ pub fn create_command_buffers(
     }
 
     command_buffers
+}
+
+pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
+    let ubo_layout_bindings = [
+        vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: ptr::null(),
+        },
+        vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            p_immutable_samplers: ptr::null(),
+        },
+    ];
+
+    let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo {
+        s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::DescriptorSetLayoutCreateFlags::empty(),
+        binding_count: ubo_layout_bindings.len() as u32,
+        p_bindings: ubo_layout_bindings.as_ptr(),
+    };
+
+    unsafe {
+        device
+            .create_descriptor_set_layout(&ubo_layout_create_info, None)
+            .expect("Failed to create Descriptor Set Layout!")
+    }
 }
 
 pub fn create_descriptor_pool(
@@ -1360,6 +1351,8 @@ pub fn create_descriptor_sets(
     descriptor_pool: vk::DescriptorPool,
     descriptor_set_layout: vk::DescriptorSetLayout,
     uniform_buffers: &Vec<vk::Buffer>,
+    texture_image_view: vk::ImageView,
+    texture_sampler: vk::Sampler,
     swapchain_images_size: usize,
 ) -> Vec<vk::DescriptorSet> {
     let mut layouts: Vec<vk::DescriptorSetLayout> = vec![];
@@ -1382,24 +1375,44 @@ pub fn create_descriptor_sets(
     };
 
     for (i, &descriptor_set) in descriptor_sets.iter().enumerate() {
-        let descriptor_buffer_info = [vk::DescriptorBufferInfo {
+        let descriptor_buffer_infos = [vk::DescriptorBufferInfo {
             buffer: uniform_buffers[i],
             offset: 0,
             range: std::mem::size_of::<UniformBufferObject>() as u64,
         }];
 
-        let descriptor_write_sets = [vk::WriteDescriptorSet {
-            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-            p_next: ptr::null(),
-            dst_set: descriptor_set,
-            dst_binding: 0,
-            dst_array_element: 0,
-            descriptor_count: 1,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            p_image_info: ptr::null(),
-            p_buffer_info: descriptor_buffer_info.as_ptr(),
-            p_texel_buffer_view: ptr::null(),
+        let descriptor_image_infos = [vk::DescriptorImageInfo {
+            sampler: texture_sampler,
+            image_view: texture_image_view,
+            image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         }];
+
+        let descriptor_write_sets = [
+            vk::WriteDescriptorSet {
+                s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                p_next: ptr::null(),
+                dst_set: descriptor_set,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                p_image_info: ptr::null(),
+                p_buffer_info: descriptor_buffer_infos.as_ptr(),
+                p_texel_buffer_view: ptr::null(),
+            },
+            vk::WriteDescriptorSet {
+                s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                p_next: ptr::null(),
+                dst_set: descriptor_set,
+                dst_binding: 1,
+                dst_array_element: 0,
+                descriptor_count: 1,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                p_image_info: descriptor_image_infos.as_ptr(),
+                p_buffer_info: ptr::null(),
+                p_texel_buffer_view: ptr::null(),
+            },
+        ];
 
         unsafe {
             device.update_descriptor_sets(&descriptor_write_sets, &[]);
@@ -1419,21 +1432,10 @@ pub fn create_texture_image(
     let mut image_object = image::open(image_path).unwrap();
     image_object = image_object.flipv();
     let (image_width, image_height) = (image_object.width(), image_object.height());
+    let binding = image_object.to_rgba8();
+    let image_data = binding.as_bytes();
     let image_size =
         (std::mem::size_of::<u8>() as u32 * image_width * image_height * 4) as vk::DeviceSize;
-    let image_data = match &image_object {
-        image::DynamicImage::ImageLuma8(_)
-        | image::DynamicImage::ImageRgb8(_)
-        | image::DynamicImage::ImageLuma16(_)
-        | image::DynamicImage::ImageRgb16(_)
-        | image::DynamicImage::ImageRgb32F(_) => image_object.to_rgba8().into_raw(),
-        image::DynamicImage::ImageLumaA8(_)
-        | image::DynamicImage::ImageRgba8(_)
-        | image::DynamicImage::ImageLumaA16(_)
-        | image::DynamicImage::ImageRgba16(_)
-        | image::DynamicImage::ImageRgba32F(_) => image_object.into_bytes(),
-        _ => panic!("Failed to match dynamic image format!"),
-    };
 
     if image_size <= 0 {
         panic!("Failed to load texture image!")
@@ -1466,7 +1468,9 @@ pub fn create_texture_image(
         device,
         image_width,
         image_height,
-        vk::Format::R8G8B8A8_UNORM,
+        1,
+        vk::SampleCountFlags::TYPE_1,
+        vk::Format::R8G8B8A8_SRGB,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
@@ -1478,9 +1482,10 @@ pub fn create_texture_image(
         command_pool,
         submit_queue,
         texture_image,
-        vk::Format::R8G8B8A8_UNORM,
+        vk::Format::R8G8B8A8_SRGB,
         vk::ImageLayout::UNDEFINED,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        1,
     );
 
     copy_buffer_to_image(
@@ -1501,6 +1506,7 @@ pub fn create_texture_image(
         vk::Format::R8G8B8A8_UNORM,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        1,
     );
 
     unsafe {
@@ -1515,6 +1521,8 @@ fn create_image(
     device: &ash::Device,
     width: u32,
     height: u32,
+    mip_levels: u32,
+    num_samples: vk::SampleCountFlags,
     format: vk::Format,
     tiling: vk::ImageTiling,
     usage: vk::ImageUsageFlags,
@@ -1527,20 +1535,20 @@ fn create_image(
         flags: vk::ImageCreateFlags::empty(),
         image_type: vk::ImageType::TYPE_2D,
         format,
-        extent: vk::Extent3D {
-            width,
-            height,
-            depth: 1,
-        },
-        mip_levels: 1,
+        mip_levels,
         array_layers: 1,
-        samples: vk::SampleCountFlags::TYPE_1,
+        samples: num_samples,
         tiling,
         usage,
         sharing_mode: vk::SharingMode::EXCLUSIVE,
         queue_family_index_count: 0,
         p_queue_family_indices: ptr::null(),
         initial_layout: vk::ImageLayout::UNDEFINED,
+        extent: vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
     };
 
     let texture_image = unsafe {
@@ -1584,6 +1592,7 @@ fn transition_image_layout(
     _format: vk::Format,
     old_layout: vk::ImageLayout,
     new_layout: vk::ImageLayout,
+    mip_levels: u32,
 ) {
     let command_buffer = begin_single_time_command(device, command_pool);
 
@@ -1606,6 +1615,14 @@ fn transition_image_layout(
         dst_access_mask = vk::AccessFlags::SHADER_READ;
         source_stage = vk::PipelineStageFlags::TRANSFER;
         destination_stage = vk::PipelineStageFlags::FRAGMENT_SHADER;
+    } else if old_layout == vk::ImageLayout::UNDEFINED
+        && new_layout == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+    {
+        src_access_mask = vk::AccessFlags::empty();
+        dst_access_mask =
+            vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE;
+        source_stage = vk::PipelineStageFlags::TOP_OF_PIPE;
+        destination_stage = vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
     } else {
         panic!("Unsupported layout transition!")
     }
@@ -1623,7 +1640,7 @@ fn transition_image_layout(
         subresource_range: vk::ImageSubresourceRange {
             aspect_mask: vk::ImageAspectFlags::COLOR,
             base_mip_level: 0,
-            level_count: 1,
+            level_count: mip_levels,
             base_array_layer: 0,
             layer_count: 1,
         },

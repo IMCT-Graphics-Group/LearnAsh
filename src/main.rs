@@ -1,6 +1,6 @@
 use std::{path::Path, ptr};
 
-use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
+use cgmath::{Deg, Matrix4, Point3, Vector3};
 use learn_ash::{
     utility,
     utility::{
@@ -141,21 +141,21 @@ impl VulkanRenderer {
             &Path::new(TEXTURE_PATH),
         );
         let texture_image_view =
-            utility::general::create_texture_image_view(&device, texture_image);
+            utility::general::create_texture_image_view(&device, texture_image, 1);
         let texture_sampler = utility::general::create_texture_sampler(&device);
         let (vertex_buffer, vertex_buffer_memory) = utility::general::create_vertex_buffer(
-            &instance,
             &device,
-            physical_device,
+            &physical_device_memory_properties,
             command_pool,
             graphics_queue,
+            &RECT_TEX_COORD_VERTICES_DATA,
         );
         let (index_buffer, index_buffer_memory) = utility::general::create_index_buffer(
-            &instance,
             &device,
-            physical_device,
+            &physical_device_memory_properties,
             command_pool,
             graphics_queue,
+            &RECT_INDICES_DATA,
         );
         let (uniform_buffers, uniform_buffers_memory) = utility::general::create_uniform_buffers(
             &device,
@@ -171,6 +171,8 @@ impl VulkanRenderer {
             descriptor_pool,
             ubo_layout,
             &uniform_buffers,
+            texture_image_view,
+            texture_sampler,
             swapchain_stuff.swapchain_images.len(),
         );
         let command_buffers = utility::general::create_command_buffers(
@@ -228,19 +230,23 @@ impl VulkanRenderer {
             index_buffer_memory,
 
             uniform_transform: UniformBufferObject {
-                model: Matrix4::<f32>::identity(),
+                model: Matrix4::from_angle_z(Deg(90.0)),
                 view: Matrix4::look_at_rh(
                     Point3::new(2.0, 2.0, 2.0),
                     Point3::new(0.0, 0.0, 0.0),
                     Vector3::new(0.0, 0.0, 1.0),
                 ),
-                proj: cgmath::perspective(
-                    Deg(45.0),
-                    swapchain_stuff.swapchain_extent.width as f32
-                        / swapchain_stuff.swapchain_extent.height as f32,
-                    0.1,
-                    10.0,
-                ),
+                proj: {
+                    let mut proj = cgmath::perspective(
+                        Deg(45.0),
+                        swapchain_stuff.swapchain_extent.width as f32
+                            / swapchain_stuff.swapchain_extent.height as f32,
+                        0.1,
+                        10.0,
+                    );
+                    // proj[1][1] = proj[1][1] * -1.0;
+                    proj
+                },
             },
             uniform_buffers,
             uniform_buffers_memory,
@@ -262,11 +268,7 @@ impl VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    fn update_uniform_buffer(&mut self, current_image: usize, delta_time: f32) {
-        self.uniform_transform.model =
-            Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
-                * self.uniform_transform.model;
-
+    fn update_uniform_buffer(&mut self, current_image: usize, _delta_time: f32) {
         let ubos = [self.uniform_transform.clone()];
 
         let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
