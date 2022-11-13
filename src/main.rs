@@ -1,4 +1,4 @@
-use std::ptr;
+use std::{path::Path, ptr};
 
 use cgmath::{Deg, Matrix4, Point3, SquareMatrix, Vector3};
 use learn_ash::{
@@ -43,6 +43,8 @@ struct VulkanRenderer {
     graphics_pipeline: vk::Pipeline,
 
     texture_image: vk::Image,
+    texture_image_view: vk::ImageView,
+    texture_sampler: vk::Sampler,
     texture_image_memory: vk::DeviceMemory,
 
     vertex_buffer: vk::Buffer,
@@ -131,7 +133,16 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
         );
         let command_pool = utility::general::create_command_pool(&device, &queue_family);
-        let(texture_image, texture_image_memory)=
+        let (texture_image, texture_image_memory) = utility::general::create_texture_image(
+            &device,
+            command_pool,
+            graphics_queue,
+            &physical_device_memory_properties,
+            &Path::new(TEXTURE_PATH),
+        );
+        let texture_image_view =
+            utility::general::create_texture_image_view(&device, texture_image);
+        let texture_sampler = utility::general::create_texture_sampler(&device);
         let (vertex_buffer, vertex_buffer_memory) = utility::general::create_vertex_buffer(
             &instance,
             &device,
@@ -205,6 +216,11 @@ impl VulkanRenderer {
             ubo_layout,
             render_pass,
             graphics_pipeline,
+
+            texture_image,
+            texture_image_view,
+            texture_sampler,
+            texture_image_memory,
 
             vertex_buffer,
             vertex_buffer_memory,
@@ -301,6 +317,13 @@ impl Drop for VulkanRenderer {
 
             self.device.destroy_buffer(self.vertex_buffer, None);
             self.device.free_memory(self.vertex_buffer_memory, None);
+
+            self.device.destroy_sampler(self.texture_sampler, None);
+            self.device
+                .destroy_image_view(self.texture_image_view, None);
+
+            self.device.destroy_image(self.texture_image, None);
+            self.device.free_memory(self.texture_image_memory, None);
 
             self.device
                 .destroy_descriptor_set_layout(self.ubo_layout, None);

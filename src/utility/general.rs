@@ -461,6 +461,17 @@ fn choose_swapchain_extent(
     }
 }
 
+pub fn create_texture_image_view(device: &ash::Device, texture_image: vk::Image) -> vk::ImageView {
+    let texture_image_view = create_image_view(
+        device,
+        texture_image,
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageAspectFlags::COLOR,
+        1,
+    );
+    texture_image_view
+}
+
 pub fn create_image_views(
     device: &ash::Device,
     surface_format: vk::Format,
@@ -515,6 +526,35 @@ pub fn create_image_view(
         device
             .create_image_view(&imageview_create_info, None)
             .expect("Failed to create Image View!")
+    }
+}
+
+pub fn create_texture_sampler(device: &ash::Device) -> vk::Sampler {
+    let sampler_create_info = vk::SamplerCreateInfo {
+        s_type: vk::StructureType::SAMPLER_CREATE_INFO,
+        p_next: ptr::null(),
+        flags: vk::SamplerCreateFlags::empty(),
+        mag_filter: vk::Filter::LINEAR,
+        min_filter: vk::Filter::LINEAR,
+        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+        address_mode_u: vk::SamplerAddressMode::REPEAT,
+        address_mode_v: vk::SamplerAddressMode::REPEAT,
+        address_mode_w: vk::SamplerAddressMode::REPEAT,
+        mip_lod_bias: 0.0,
+        anisotropy_enable: vk::TRUE,
+        max_anisotropy: 16.0,
+        compare_enable: vk::FALSE,
+        compare_op: vk::CompareOp::ALWAYS,
+        min_lod: 0.0,
+        max_lod: 0.0,
+        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+        unnormalized_coordinates: vk::FALSE,
+    };
+
+    unsafe {
+        device
+            .create_sampler(&sampler_create_info, None)
+            .expect("Failed to create Sampler!")
     }
 }
 
@@ -818,13 +858,22 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
 }
 
 pub fn create_descriptor_set_layout(device: &ash::Device) -> vk::DescriptorSetLayout {
-    let ubo_layout_bindings = [vk::DescriptorSetLayoutBinding {
-        binding: 0,
-        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: vk::ShaderStageFlags::VERTEX,
-        p_immutable_samplers: ptr::null(),
-    }];
+    let ubo_layout_bindings = [
+        vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: ptr::null(),
+        },
+        vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            p_immutable_samplers: ptr::null(),
+        },
+    ];
 
     let ubo_layout_create_info = vk::DescriptorSetLayoutCreateInfo {
         s_type: vk::StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1279,10 +1328,16 @@ pub fn create_descriptor_pool(
     device: &ash::Device,
     swapchain_images_size: usize,
 ) -> vk::DescriptorPool {
-    let pool_sizes = [vk::DescriptorPoolSize {
-        ty: vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: swapchain_images_size as u32,
-    }];
+    let pool_sizes = [
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: swapchain_images_size as u32,
+        },
+        vk::DescriptorPoolSize {
+            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: swapchain_images_size as u32,
+        },
+    ];
 
     let descriptor_pool_create_info = vk::DescriptorPoolCreateInfo {
         s_type: vk::StructureType::DESCRIPTOR_POOL_CREATE_INFO,
@@ -1367,12 +1422,17 @@ pub fn create_texture_image(
     let image_size =
         (std::mem::size_of::<u8>() as u32 * image_width * image_height * 4) as vk::DeviceSize;
     let image_data = match &image_object {
-        image::DynamicImage::ImageLuma8(_) | image::DynamicImage::ImageRgb8(_) => {
-            image_object.to_rgba8().into_raw()
-        }
-        image::DynamicImage::ImageLumaA8(_) | image::DynamicImage::ImageRgba8(_) => {
-            image_object.into_bytes()
-        }
+        image::DynamicImage::ImageLuma8(_)
+        | image::DynamicImage::ImageRgb8(_)
+        | image::DynamicImage::ImageLuma16(_)
+        | image::DynamicImage::ImageRgb16(_)
+        | image::DynamicImage::ImageRgb32F(_) => image_object.to_rgba8().into_raw(),
+        image::DynamicImage::ImageLumaA8(_)
+        | image::DynamicImage::ImageRgba8(_)
+        | image::DynamicImage::ImageLumaA16(_)
+        | image::DynamicImage::ImageRgba16(_)
+        | image::DynamicImage::ImageRgba32F(_) => image_object.into_bytes(),
+        _ => panic!("Failed to match dynamic image format!"),
     };
 
     if image_size <= 0 {
@@ -1423,7 +1483,32 @@ pub fn create_texture_image(
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
     );
 
-    copy_buffer_to
+    copy_buffer_to_image(
+        device,
+        command_pool,
+        submit_queue,
+        staging_buffer,
+        texture_image,
+        image_width,
+        image_height,
+    );
+
+    transition_image_layout(
+        device,
+        command_pool,
+        submit_queue,
+        texture_image,
+        vk::Format::R8G8B8A8_UNORM,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    );
+
+    unsafe {
+        device.destroy_buffer(staging_buffer, None);
+        device.free_memory(staging_buffer_memory, None);
+    }
+
+    (texture_image, texture_image_memory)
 }
 
 fn create_image(
@@ -1639,7 +1724,37 @@ fn copy_buffer_to_image(
     width: u32,
     height: u32,
 ) {
-    todo!()
+    let command_buffer = begin_single_time_command(device, command_pool);
+
+    let buffer_image_regions = [vk::BufferImageCopy {
+        image_subresource: vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        },
+        image_extent: vk::Extent3D {
+            width,
+            height,
+            depth: 1,
+        },
+        buffer_offset: 0,
+        buffer_image_height: 0,
+        buffer_row_length: 0,
+        image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+    }];
+
+    unsafe {
+        device.cmd_copy_buffer_to_image(
+            command_buffer,
+            buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &buffer_image_regions,
+        );
+    }
+
+    end_single_time_command(device, command_pool, submit_queue, command_buffer);
 }
 
 pub fn create_sync_objects(device: &ash::Device, max_frames_in_flight: usize) -> SyncObjects {
