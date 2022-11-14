@@ -55,8 +55,8 @@ pub struct SyncObjects {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Vertex {
-    pub pos: [f32; 3],
-    pub color: [f32; 3],
+    pub pos: [f32; 4],
+    pub color: [f32; 4],
     pub tex_coord: [f32; 2],
 }
 
@@ -74,13 +74,13 @@ impl Vertex {
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 0,
-                format: vk::Format::R32G32B32_SFLOAT,
+                format: vk::Format::R32G32B32A32_SFLOAT,
                 offset: offset_of!(Vertex, pos) as u32,
             },
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 1,
-                format: vk::Format::R32G32B32_SFLOAT,
+                format: vk::Format::R32G32B32A32_SFLOAT,
                 offset: offset_of!(Vertex, color) as u32,
             },
             vk::VertexInputAttributeDescription {

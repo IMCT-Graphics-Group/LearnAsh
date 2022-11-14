@@ -1,6 +1,7 @@
 use crate::{utility, utility::constants::*, utility::platforms, utility::structures::*};
 
 use std::{
+    cmp::{max, min},
     collections::HashSet,
     ffi::{c_char, c_void, CString},
     path::Path,
@@ -531,24 +532,24 @@ pub fn create_image_view(
     }
 }
 
-pub fn create_texture_sampler(device: &ash::Device) -> vk::Sampler {
+pub fn create_texture_sampler(device: &ash::Device, mip_levels: u32) -> vk::Sampler {
     let sampler_create_info = vk::SamplerCreateInfo {
         s_type: vk::StructureType::SAMPLER_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::SamplerCreateFlags::empty(),
         mag_filter: vk::Filter::LINEAR,
         min_filter: vk::Filter::LINEAR,
-        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
         address_mode_u: vk::SamplerAddressMode::REPEAT,
         address_mode_v: vk::SamplerAddressMode::REPEAT,
         address_mode_w: vk::SamplerAddressMode::REPEAT,
-        mip_lod_bias: 0.0,
         anisotropy_enable: vk::TRUE,
         max_anisotropy: 16.0,
         compare_enable: vk::FALSE,
         compare_op: vk::CompareOp::ALWAYS,
+        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
         min_lod: 0.0,
-        max_lod: 0.0,
+        max_lod: mip_levels as f32,
+        mip_lod_bias: 0.0,
         border_color: vk::BorderColor::INT_OPAQUE_BLACK,
         unnormalized_coordinates: vk::FALSE,
     };
@@ -565,6 +566,7 @@ pub fn create_graphics_pipeline(
     render_pass: vk::RenderPass,
     swapchain_extent: vk::Extent2D,
     ubo_set_layout: vk::DescriptorSetLayout,
+    msaa_samples: vk::SampleCountFlags,
 ) -> (vk::Pipeline, vk::PipelineLayout) {
     let vert_shader_code = utility::tools::read_shader_code(Path::new("shaders/spv/vert.spv"));
     let frag_shader_code = utility::tools::read_shader_code(Path::new("shaders/spv/frag.spv"));
@@ -658,7 +660,7 @@ pub fn create_graphics_pipeline(
         s_type: vk::StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineMultisampleStateCreateFlags::empty(),
-        rasterization_samples: vk::SampleCountFlags::TYPE_1,
+        rasterization_samples: msaa_samples,
         sample_shading_enable: vk::FALSE,
         min_sample_shading: 0.0,
         p_sample_mask: ptr::null(),
@@ -680,9 +682,9 @@ pub fn create_graphics_pipeline(
         s_type: vk::StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         p_next: ptr::null(),
         flags: vk::PipelineDepthStencilStateCreateFlags::empty(),
-        depth_test_enable: vk::FALSE,
-        depth_write_enable: vk::FALSE,
-        depth_compare_op: vk::CompareOp::LESS_OR_EQUAL,
+        depth_test_enable: vk::TRUE,
+        depth_write_enable: vk::TRUE,
+        depth_compare_op: vk::CompareOp::LESS,
         depth_bounds_test_enable: vk::FALSE,
         stencil_test_enable: vk::FALSE,
         front: stencil_state,
@@ -792,29 +794,42 @@ pub fn create_render_pass(
     device: &ash::Device,
     physical_device: vk::PhysicalDevice,
     surface_format: vk::Format,
+    msaa_samples: vk::SampleCountFlags,
 ) -> vk::RenderPass {
     let color_attachment = vk::AttachmentDescription {
         flags: vk::AttachmentDescriptionFlags::empty(),
         format: surface_format,
-        samples: vk::SampleCountFlags::TYPE_1,
+        samples: msaa_samples,
         load_op: vk::AttachmentLoadOp::CLEAR,
         store_op: vk::AttachmentStoreOp::STORE,
         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
         initial_layout: vk::ImageLayout::UNDEFINED,
-        final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+        final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     };
 
     let depth_attachment = vk::AttachmentDescription {
         flags: vk::AttachmentDescriptionFlags::empty(),
         format: find_depth_format(instance, physical_device),
-        samples: vk::SampleCountFlags::TYPE_1,
+        samples: msaa_samples,
         load_op: vk::AttachmentLoadOp::CLEAR,
         store_op: vk::AttachmentStoreOp::DONT_CARE,
         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
         initial_layout: vk::ImageLayout::UNDEFINED,
         final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
+    let color_attachment_resolve = vk::AttachmentDescription {
+        flags: vk::AttachmentDescriptionFlags::empty(),
+        format: surface_format,
+        samples: vk::SampleCountFlags::TYPE_1,
+        load_op: vk::AttachmentLoadOp::DONT_CARE,
+        store_op: vk::AttachmentStoreOp::STORE,
+        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+        initial_layout: vk::ImageLayout::UNDEFINED,
+        final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
     };
 
     let color_attachment_ref = vk::AttachmentReference {
@@ -827,6 +842,11 @@ pub fn create_render_pass(
         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
+    let color_attachment_resolve_ref = vk::AttachmentReference {
+        attachment: 2,
+        layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    };
+
     let subpasses = [vk::SubpassDescription {
         color_attachment_count: 1,
         p_color_attachments: &color_attachment_ref,
@@ -835,21 +855,23 @@ pub fn create_render_pass(
         pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
         input_attachment_count: 0,
         p_input_attachments: ptr::null(),
-        p_resolve_attachments: ptr::null(),
+        p_resolve_attachments: &color_attachment_resolve_ref,
         preserve_attachment_count: 0,
         p_preserve_attachments: ptr::null(),
     }];
 
-    let render_pass_attachments = [color_attachment, depth_attachment];
+    let render_pass_attachments = [color_attachment, depth_attachment, color_attachment_resolve];
 
     let subpass_dependencies = [vk::SubpassDependency {
         src_subpass: vk::SUBPASS_EXTERNAL,
         dst_subpass: 0,
-        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+            | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+        dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+            | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
         src_access_mask: vk::AccessFlags::empty(),
-        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ
-            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+            | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
         dependency_flags: vk::DependencyFlags::empty(),
     }];
 
@@ -900,14 +922,15 @@ pub fn create_uniform_buffers(
 pub fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    image_views: &Vec<vk::ImageView>,
+    swapchain_image_views: &Vec<vk::ImageView>,
     depth_image_view: vk::ImageView,
+    color_image_view: vk::ImageView,
     swapchain_extent: vk::Extent2D,
 ) -> Vec<vk::Framebuffer> {
     let mut framebuffers = vec![];
 
-    for &image_view in image_views.iter() {
-        let attachments = [image_view, depth_image_view];
+    for &image_view in swapchain_image_views.iter() {
+        let attachments = [color_image_view, depth_image_view, image_view];
 
         let framebuffer_create_info = vk::FramebufferCreateInfo {
             s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,
@@ -1216,6 +1239,7 @@ pub fn create_command_buffers(
     index_buffer: vk::Buffer,
     pipeline_layout: vk::PipelineLayout,
     descriptor_sets: &Vec<vk::DescriptorSet>,
+    index_count: u32,
 ) -> Vec<vk::CommandBuffer> {
     let command_buffer_allocate_info = vk::CommandBufferAllocateInfo {
         s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1245,11 +1269,19 @@ pub fn create_command_buffers(
                 .expect("Failed to begin recording Command Buffer at beginning!");
         }
 
-        let clear_values = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
             },
-        }];
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            },
+        ];
 
         let render_pass_begin_info = vk::RenderPassBeginInfo {
             s_type: vk::StructureType::RENDER_PASS_BEGIN_INFO,
@@ -1291,7 +1323,7 @@ pub fn create_command_buffers(
                 &[],
             );
 
-            device.cmd_draw_indexed(command_buffer, RECT_INDICES_DATA.len() as u32, 1, 0, 0, 0);
+            device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
 
             device.cmd_end_render_pass(command_buffer);
 
@@ -1444,6 +1476,77 @@ pub fn create_descriptor_sets(
     descriptor_sets
 }
 
+pub fn get_max_usable_sample_count(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+) -> vk::SampleCountFlags {
+    let physical_device_properties =
+        unsafe { instance.get_physical_device_properties(physical_device) };
+
+    let count = min(
+        physical_device_properties
+            .limits
+            .framebuffer_color_sample_counts,
+        physical_device_properties
+            .limits
+            .framebuffer_depth_sample_counts,
+    );
+
+    if count.contains(vk::SampleCountFlags::TYPE_64) {
+        return vk::SampleCountFlags::TYPE_64;
+    }
+    if count.contains(vk::SampleCountFlags::TYPE_32) {
+        return vk::SampleCountFlags::TYPE_32;
+    }
+    if count.contains(vk::SampleCountFlags::TYPE_16) {
+        return vk::SampleCountFlags::TYPE_16;
+    }
+    if count.contains(vk::SampleCountFlags::TYPE_8) {
+        return vk::SampleCountFlags::TYPE_8;
+    }
+    if count.contains(vk::SampleCountFlags::TYPE_4) {
+        return vk::SampleCountFlags::TYPE_4;
+    }
+    if count.contains(vk::SampleCountFlags::TYPE_2) {
+        return vk::SampleCountFlags::TYPE_2;
+    }
+
+    vk::SampleCountFlags::TYPE_1
+}
+
+pub fn create_color_resources(
+    device: &ash::Device,
+    swapchain_format: vk::Format,
+    swapchain_extent: vk::Extent2D,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    msaa_samples: vk::SampleCountFlags,
+) -> (vk::Image, vk::ImageView, vk::DeviceMemory) {
+    let color_format = swapchain_format;
+
+    let (color_image, color_image_memory) = create_image(
+        device,
+        swapchain_extent.width,
+        swapchain_extent.height,
+        1,
+        msaa_samples,
+        color_format,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        device_memory_properties,
+    );
+
+    let color_image_view = create_image_view(
+        device,
+        color_image,
+        color_format,
+        vk::ImageAspectFlags::COLOR,
+        1,
+    );
+
+    (color_image, color_image_view, color_image_memory)
+}
+
 pub fn create_depth_resources(
     instance: &ash::Instance,
     device: &ash::Device,
@@ -1452,6 +1555,7 @@ pub fn create_depth_resources(
     _submit_queue: vk::Queue,
     swapchain_extent: vk::Extent2D,
     device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    msaa_samples: vk::SampleCountFlags,
 ) -> (vk::Image, vk::ImageView, vk::DeviceMemory) {
     let depth_format = find_depth_format(instance, physical_device);
     let (depth_image, depth_image_memory) = create_image(
@@ -1459,7 +1563,7 @@ pub fn create_depth_resources(
         swapchain_extent.width,
         swapchain_extent.height,
         1,
-        vk::SampleCountFlags::TYPE_1,
+        msaa_samples,
         depth_format,
         vk::ImageTiling::OPTIMAL,
         vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
@@ -1515,13 +1619,18 @@ fn find_supported_format(
     panic!("Failed to find supported format!")
 }
 
+#[allow(dead_code)]
+fn has_stencil_component(format: vk::Format) -> bool {
+    format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
+}
+
 pub fn create_texture_image(
     device: &ash::Device,
     command_pool: vk::CommandPool,
     submit_queue: vk::Queue,
     device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
     image_path: &Path,
-) -> (vk::Image, vk::DeviceMemory) {
+) -> (vk::Image, vk::DeviceMemory, u32) {
     let mut image_object = image::open(image_path).unwrap();
     image_object = image_object.flipv();
     let (image_width, image_height) = (image_object.width(), image_object.height());
@@ -1529,6 +1638,7 @@ pub fn create_texture_image(
     let image_data = binding.as_bytes();
     let image_size =
         (std::mem::size_of::<u8>() as u32 * image_width * image_height * 4) as vk::DeviceSize;
+    let mip_levels = ((max(image_width, image_height) as f32).log2() as u32) + 1;
 
     if image_size <= 0 {
         panic!("Failed to load texture image!")
@@ -1561,11 +1671,13 @@ pub fn create_texture_image(
         device,
         image_width,
         image_height,
-        1,
+        mip_levels,
         vk::SampleCountFlags::TYPE_1,
         vk::Format::R8G8B8A8_SRGB,
         vk::ImageTiling::OPTIMAL,
-        vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
+        vk::ImageUsageFlags::TRANSFER_SRC
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::SAMPLED,
         vk::MemoryPropertyFlags::DEVICE_LOCAL,
         device_memory_properties,
     );
@@ -1578,7 +1690,7 @@ pub fn create_texture_image(
         vk::Format::R8G8B8A8_SRGB,
         vk::ImageLayout::UNDEFINED,
         vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        1,
+        mip_levels,
     );
 
     copy_buffer_to_image(
@@ -1591,15 +1703,14 @@ pub fn create_texture_image(
         image_height,
     );
 
-    transition_image_layout(
+    generate_mipmaps(
         device,
         command_pool,
         submit_queue,
         texture_image,
-        vk::Format::R8G8B8A8_UNORM,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        1,
+        image_width,
+        image_height,
+        mip_levels,
     );
 
     unsafe {
@@ -1607,7 +1718,161 @@ pub fn create_texture_image(
         device.free_memory(staging_buffer_memory, None);
     }
 
-    (texture_image, texture_image_memory)
+    (texture_image, texture_image_memory, mip_levels)
+}
+
+pub fn check_mipmap_support(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    image_format: vk::Format,
+) {
+    let format_properties =
+        unsafe { instance.get_physical_device_format_properties(physical_device, image_format) };
+
+    let is_sample_image_filter_linear_support = format_properties
+        .optimal_tiling_features
+        .contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR);
+
+    if is_sample_image_filter_linear_support == false {
+        panic!("Texture Image format does not support linear blitting!")
+    }
+}
+
+fn generate_mipmaps(
+    device: &ash::Device,
+    command_pool: vk::CommandPool,
+    submit_queue: vk::Queue,
+    image: vk::Image,
+    tex_width: u32,
+    tex_height: u32,
+    mip_levels: u32,
+) {
+    let command_buffer = begin_single_time_command(device, command_pool);
+
+    let mut image_barrier = vk::ImageMemoryBarrier {
+        s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
+        p_next: ptr::null(),
+        src_access_mask: vk::AccessFlags::empty(),
+        dst_access_mask: vk::AccessFlags::empty(),
+        old_layout: vk::ImageLayout::UNDEFINED,
+        new_layout: vk::ImageLayout::UNDEFINED,
+        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+        image,
+        subresource_range: vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        },
+    };
+
+    let mut mip_width = tex_width as i32;
+    let mut mip_height = tex_height as i32;
+
+    for i in 1..mip_levels {
+        image_barrier.subresource_range.base_mip_level = i - 1;
+        image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        image_barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+        image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        image_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_barrier.clone()],
+            );
+        }
+
+        let blits = [vk::ImageBlit {
+            src_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: i - 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            src_offsets: [
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: mip_width,
+                    y: mip_height,
+                    z: 1,
+                },
+            ],
+            dst_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: i,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            dst_offsets: [
+                vk::Offset3D { x: 0, y: 0, z: 0 },
+                vk::Offset3D {
+                    x: max(mip_width / 2, 1),
+                    y: max(mip_height / 2, 1),
+                    z: 1,
+                },
+            ],
+        }];
+
+        unsafe {
+            device.cmd_blit_image(
+                command_buffer,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &blits,
+                vk::Filter::LINEAR,
+            );
+        }
+
+        image_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+        image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+        image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                command_buffer,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_barrier.clone()],
+            )
+        };
+
+        mip_width = max(mip_width / 2, 1);
+        mip_height = max(mip_height / 2, 1);
+    }
+
+    image_barrier.subresource_range.base_mip_level = mip_levels - 1;
+    image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+    image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+    image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+    unsafe {
+        device.cmd_pipeline_barrier(
+            command_buffer,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[image_barrier.clone()],
+        );
+    }
+
+    end_single_time_command(device, command_pool, submit_queue, command_buffer);
 }
 
 fn create_image(

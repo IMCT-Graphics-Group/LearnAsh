@@ -6,6 +6,7 @@ use learn_ash::{
     utility::{
         constants::*,
         structures::*,
+        tools::load_model,
         window::{ProgramProc, VulkanApp},
     },
 };
@@ -43,14 +44,24 @@ struct VulkanRenderer {
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
 
+    color_image: vk::Image,
+    color_image_view: vk::ImageView,
+    color_image_memory: vk::DeviceMemory,
+
     depth_image: vk::Image,
     depth_image_view: vk::ImageView,
     depth_image_memory: vk::DeviceMemory,
 
+    msaa_samples: vk::SampleCountFlags,
+
+    _mip_levels: u32,
     texture_image: vk::Image,
     texture_image_view: vk::ImageView,
     texture_sampler: vk::Sampler,
     texture_image_memory: vk::DeviceMemory,
+
+    _vertices: Vec<Vertex>,
+    indices: Vec<u32>,
 
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
@@ -99,6 +110,8 @@ impl VulkanRenderer {
 
         let physical_device =
             utility::general::pick_physcial_device(&instance, &surface_stuff, &DEVICE_EXTENSIONS);
+        let msaa_samples =
+            utility::general::get_max_usable_sample_count(&instance, physical_device);
         let physical_device_memory_properties =
             unsafe { instance.get_physical_device_memory_properties(physical_device) };
         let (device, queue_family) = utility::general::create_logical_device(
@@ -132,6 +145,7 @@ impl VulkanRenderer {
             &device,
             physical_device,
             swapchain_stuff.swapchain_format,
+            msaa_samples,
         );
         let ubo_layout = utility::general::create_descriptor_set_layout(&device);
         let (graphics_pipeline, pipeline_layout) = utility::general::create_graphics_pipeline(
@@ -139,8 +153,17 @@ impl VulkanRenderer {
             render_pass,
             swapchain_stuff.swapchain_extent,
             ubo_layout,
+            msaa_samples,
         );
         let command_pool = utility::general::create_command_pool(&device, &queue_family);
+        let (color_image, color_image_view, color_image_memory) =
+            utility::general::create_color_resources(
+                &device,
+                swapchain_stuff.swapchain_format,
+                swapchain_stuff.swapchain_extent,
+                &physical_device_memory_properties,
+                msaa_samples,
+            );
         let (depth_image, depth_image_view, depth_image_memory) =
             utility::general::create_depth_resources(
                 &instance,
@@ -150,37 +173,46 @@ impl VulkanRenderer {
                 graphics_queue,
                 swapchain_stuff.swapchain_extent,
                 &physical_device_memory_properties,
+                msaa_samples,
             );
         let swapchain_framebuffers = utility::general::create_framebuffers(
             &device,
             render_pass,
             &swapchain_imageviews,
             depth_image_view,
+            color_image_view,
             swapchain_stuff.swapchain_extent,
         );
-        let (texture_image, texture_image_memory) = utility::general::create_texture_image(
-            &device,
-            command_pool,
-            graphics_queue,
-            &physical_device_memory_properties,
-            &Path::new(TEXTURE_PATH),
+        let (vertices, indices) = load_model(&Path::new(MODEL_PATH));
+        utility::general::check_mipmap_support(
+            &instance,
+            physical_device,
+            vk::Format::R8G8B8A8_SRGB,
         );
+        let (texture_image, texture_image_memory, mip_levels) =
+            utility::general::create_texture_image(
+                &device,
+                command_pool,
+                graphics_queue,
+                &physical_device_memory_properties,
+                &Path::new(TEXTURE_PATH),
+            );
         let texture_image_view =
-            utility::general::create_texture_image_view(&device, texture_image, 1);
-        let texture_sampler = utility::general::create_texture_sampler(&device);
+            utility::general::create_texture_image_view(&device, texture_image, mip_levels);
+        let texture_sampler = utility::general::create_texture_sampler(&device, mip_levels);
         let (vertex_buffer, vertex_buffer_memory) = utility::general::create_vertex_buffer(
             &device,
             &physical_device_memory_properties,
             command_pool,
             graphics_queue,
-            &RECT_TEX_COORD_VERTICES_DATA,
+            &vertices,
         );
         let (index_buffer, index_buffer_memory) = utility::general::create_index_buffer(
             &device,
             &physical_device_memory_properties,
             command_pool,
             graphics_queue,
-            &RECT_INDICES_DATA,
+            &indices,
         );
         let (uniform_buffers, uniform_buffers_memory) = utility::general::create_uniform_buffers(
             &device,
@@ -211,6 +243,7 @@ impl VulkanRenderer {
             index_buffer,
             pipeline_layout,
             &descriptor_sets,
+            indices.len() as u32,
         );
         let sync_objects = utility::general::create_sync_objects(&device, MAX_FRAMES_IN_FLIGHT);
 
@@ -245,14 +278,24 @@ impl VulkanRenderer {
             render_pass,
             graphics_pipeline,
 
+            color_image,
+            color_image_view,
+            color_image_memory,
+
             depth_image,
             depth_image_view,
             depth_image_memory,
 
+            msaa_samples,
+
+            _mip_levels: mip_levels,
             texture_image,
             texture_image_view,
             texture_sampler,
             texture_image_memory,
+
+            _vertices: vertices,
+            indices,
 
             vertex_buffer,
             vertex_buffer_memory,
@@ -298,7 +341,11 @@ impl VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    fn update_uniform_buffer(&mut self, current_image: usize, _delta_time: f32) {
+    fn update_uniform_buffer(&mut self, current_image: usize, delta_time: f32) {
+        self.uniform_transform.model =
+            Matrix4::from_axis_angle(Vector3::new(0.0, 0.0, 1.0), Deg(90.0) * delta_time)
+                * self.uniform_transform.model;
+
         let ubos = [self.uniform_transform.clone()];
 
         let buffer_size = (std::mem::size_of::<UniformBufferObject>() * ubos.len()) as u64;
@@ -504,15 +551,28 @@ impl VulkanApp for VulkanRenderer {
             &self.device,
             self.physical_device,
             self.swapchain_format,
+            self.msaa_samples,
         );
         let (graphics_pipeline, pipeline_layout) = utility::general::create_graphics_pipeline(
             &self.device,
             self.render_pass,
             swapchain_stuff.swapchain_extent,
             self.ubo_layout,
+            self.msaa_samples,
         );
         self.graphics_pipeline = graphics_pipeline;
         self.pipeline_layout = pipeline_layout;
+
+        let color_resources = utility::general::create_color_resources(
+            &self.device,
+            self.swapchain_format,
+            self.swapchain_extent,
+            &self.memory_properties,
+            self.msaa_samples,
+        );
+        self.color_image = color_resources.0;
+        self.color_image_view = color_resources.1;
+        self.color_image_memory = color_resources.2;
 
         let depth_resources = utility::general::create_depth_resources(
             &self.instance,
@@ -522,6 +582,7 @@ impl VulkanApp for VulkanRenderer {
             self.graphics_queue,
             self.swapchain_extent,
             &self.memory_properties,
+            self.msaa_samples,
         );
         self.depth_image = depth_resources.0;
         self.depth_image_view = depth_resources.1;
@@ -532,6 +593,7 @@ impl VulkanApp for VulkanRenderer {
             self.render_pass,
             &self.swapchain_imageviews,
             self.depth_image_view,
+            self.color_image_view,
             self.swapchain_extent,
         );
         self.command_buffers = utility::general::create_command_buffers(
@@ -545,14 +607,19 @@ impl VulkanApp for VulkanRenderer {
             self.index_buffer,
             self.pipeline_layout,
             &self.descriptor_sets,
+            self.indices.len() as u32,
         );
     }
 
     fn cleanup_swapchain(&self) {
         unsafe {
-            self.device.destroy_image_view(self.depth_image_view, None);
             self.device.destroy_image(self.depth_image, None);
+            self.device.destroy_image_view(self.depth_image_view, None);
             self.device.free_memory(self.depth_image_memory, None);
+
+            self.device.destroy_image(self.color_image, None);
+            self.device.destroy_image_view(self.color_image_view, None);
+            self.device.free_memory(self.color_image_memory, None);
 
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);

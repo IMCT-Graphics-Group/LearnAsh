@@ -8,7 +8,9 @@ use winit::event::VirtualKeyCode;
 
 // Constants
 pub const WINDOW_TITLE: &'static str = "测试窗口";
-pub const TEXTURE_PATH: &'static str = "textures/texture.jpg";
+// pub const TEXTURE_PATH: &'static str = "textures/texture.jpg";
+pub const MODEL_PATH: &'static str = "assets/viking_room.obj";
+pub const TEXTURE_PATH: &'static str = "assets/viking_room.png";
 pub const WINDOW_WIDTH: u32 = 800;
 pub const WINDOW_HEIGHT: u32 = 600;
 pub const WINDOW_KEYCODE_EXIT: VirtualKeyCode = VirtualKeyCode::Escape;
@@ -31,48 +33,3 @@ impl DeviceExtension {
 }
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
-
-pub const RECT_INDICES_DATA: [u32; 12] = [0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4];
-
-pub const RECT_TEX_COORD_VERTICES_DATA: [Vertex; 8] = [
-    Vertex {
-        pos: [-0.75, -0.75, 0.0],
-        color: [1.0, 0.0, 0.0],
-        tex_coord: [0.0, 0.0],
-    },
-    Vertex {
-        pos: [0.75, -0.75, 0.0],
-        color: [0.0, 1.0, 0.0],
-        tex_coord: [1.0, 0.0],
-    },
-    Vertex {
-        pos: [0.75, 0.75, 0.0],
-        color: [0.0, 0.0, 1.0],
-        tex_coord: [1.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.75, 0.75, 0.0],
-        color: [1.0, 1.0, 1.0],
-        tex_coord: [0.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.75, -0.75, -0.75],
-        color: [1.0, 0.0, 0.0],
-        tex_coord: [0.0, 0.0],
-    },
-    Vertex {
-        pos: [0.75, -0.75, -0.75],
-        color: [0.0, 1.0, 0.0],
-        tex_coord: [1.0, 0.0],
-    },
-    Vertex {
-        pos: [0.75, 0.75, -0.75],
-        color: [0.0, 0.0, 1.0],
-        tex_coord: [1.0, 1.0],
-    },
-    Vertex {
-        pos: [-0.75, 0.75, -0.75],
-        color: [1.0, 1.0, 1.0],
-        tex_coord: [0.0, 1.0],
-    },
-];
