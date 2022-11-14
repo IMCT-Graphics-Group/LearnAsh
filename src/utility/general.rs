@@ -15,13 +15,12 @@ use super::debug::ValidationInfo;
 pub fn create_instance(
     entry: &ash::Entry,
     window_title: &str,
-    validation: &ValidationInfo,
+    is_enable_debug: bool,
+    required_validation_layers: &Vec<&str>,
 ) -> ash::Instance {
-    if validation.is_enable
-        && utility::debug::check_validation_layer_support(
-            entry,
-            &validation.required_validation_layers.to_vec(),
-        ) == false
+    if is_enable_debug
+        && utility::debug::check_validation_layer_support(entry, required_validation_layers)
+            == false
     {
         panic!("Validation layers requested, but not available!");
     }
@@ -42,8 +41,7 @@ pub fn create_instance(
 
     let extension_names = utility::platforms::required_extension_names();
 
-    let required_validation_layer_raw_names: Vec<CString> = validation
-        .required_validation_layers
+    let required_validation_layer_raw_names: Vec<CString> = required_validation_layers
         .iter()
         .map(|layer_name| CString::new(*layer_name).unwrap())
         .collect();
@@ -54,19 +52,19 @@ pub fn create_instance(
 
     let create_info = vk::InstanceCreateInfo {
         s_type: vk::StructureType::INSTANCE_CREATE_INFO,
-        p_next: if validation.is_enable {
+        p_next: if is_enable_debug {
             &debug_utils_create_info as *const vk::DebugUtilsMessengerCreateInfoEXT as *const c_void
         } else {
             ptr::null()
         },
         flags: vk::InstanceCreateFlags::empty(),
         p_application_info: &app_info,
-        pp_enabled_layer_names: if validation.is_enable {
+        pp_enabled_layer_names: if is_enable_debug {
             layer_names.as_ptr()
         } else {
             ptr::null()
         },
-        enabled_layer_count: if validation.is_enable {
+        enabled_layer_count: if is_enable_debug {
             layer_names.len()
         } else {
             0
@@ -647,7 +645,7 @@ pub fn create_graphics_pipeline(
         flags: vk::PipelineRasterizationStateCreateFlags::empty(),
         depth_clamp_enable: vk::FALSE,
         cull_mode: vk::CullModeFlags::BACK,
-        front_face: vk::FrontFace::CLOCKWISE,
+        front_face: vk::FrontFace::COUNTER_CLOCKWISE,
         line_width: 1.0,
         polygon_mode: vk::PolygonMode::FILL,
         rasterizer_discard_enable: vk::FALSE,

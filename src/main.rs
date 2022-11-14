@@ -76,7 +76,12 @@ impl VulkanRenderer {
             utility::window::init_window(event_loop, WINDOW_TITLE, WINDOW_WIDTH, WINDOW_HEIGHT);
 
         let entry = ash::Entry::linked();
-        let instance = utility::general::create_instance(&entry, WINDOW_TITLE, &VALIDATION);
+        let instance = utility::general::create_instance(
+            &entry,
+            WINDOW_TITLE,
+            VALIDATION.is_enable,
+            &VALIDATION.required_validation_layers.to_vec(),
+        );
         let surface_stuff = utility::general::create_surface(
             &entry,
             &instance,
@@ -244,7 +249,7 @@ impl VulkanRenderer {
                         0.1,
                         10.0,
                     );
-                    // proj[1][1] = proj[1][1] * -1.0;
+                    proj[1][1] = proj[1][1] * -1.0;
                     proj
                 },
             },
