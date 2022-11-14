@@ -9,8 +9,8 @@ use winit::event::VirtualKeyCode;
 // Constants
 pub const WINDOW_TITLE: &'static str = "测试窗口";
 // pub const TEXTURE_PATH: &'static str = "textures/texture.jpg";
-pub const MODEL_PATH: &'static str = "assets/viking_room.obj";
-pub const TEXTURE_PATH: &'static str = "assets/viking_room.png";
+pub const MODEL_PATH: &'static str = "assets/chalet.obj";
+pub const TEXTURE_PATH: &'static str = "assets/chalet.jpg";
 pub const WINDOW_WIDTH: u32 = 800;
 pub const WINDOW_HEIGHT: u32 = 600;
 pub const WINDOW_KEYCODE_EXIT: VirtualKeyCode = VirtualKeyCode::Escape;
