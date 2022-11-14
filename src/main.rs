@@ -23,6 +23,7 @@ struct VulkanRenderer {
     debug_messenger: vk::DebugUtilsMessengerEXT,
 
     physical_device: vk::PhysicalDevice,
+    memory_properties: vk::PhysicalDeviceMemoryProperties,
     device: ash::Device,
 
     queue_family: QueueFamilyIndices,
@@ -41,6 +42,10 @@ struct VulkanRenderer {
     ubo_layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     graphics_pipeline: vk::Pipeline,
+
+    depth_image: vk::Image,
+    depth_image_view: vk::ImageView,
+    depth_image_memory: vk::DeviceMemory,
 
     texture_image: vk::Image,
     texture_image_view: vk::ImageView,
@@ -122,8 +127,12 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_format,
             &swapchain_stuff.swapchain_images,
         );
-        let render_pass =
-            utility::general::create_render_pass(&device, swapchain_stuff.swapchain_format);
+        let render_pass = utility::general::create_render_pass(
+            &instance,
+            &device,
+            physical_device,
+            swapchain_stuff.swapchain_format,
+        );
         let ubo_layout = utility::general::create_descriptor_set_layout(&device);
         let (graphics_pipeline, pipeline_layout) = utility::general::create_graphics_pipeline(
             &device,
@@ -131,13 +140,24 @@ impl VulkanRenderer {
             swapchain_stuff.swapchain_extent,
             ubo_layout,
         );
+        let command_pool = utility::general::create_command_pool(&device, &queue_family);
+        let (depth_image, depth_image_view, depth_image_memory) =
+            utility::general::create_depth_resources(
+                &instance,
+                &device,
+                physical_device,
+                command_pool,
+                graphics_queue,
+                swapchain_stuff.swapchain_extent,
+                &physical_device_memory_properties,
+            );
         let swapchain_framebuffers = utility::general::create_framebuffers(
             &device,
             render_pass,
             &swapchain_imageviews,
+            depth_image_view,
             swapchain_stuff.swapchain_extent,
         );
-        let command_pool = utility::general::create_command_pool(&device, &queue_family);
         let (texture_image, texture_image_memory) = utility::general::create_texture_image(
             &device,
             command_pool,
@@ -205,6 +225,7 @@ impl VulkanRenderer {
             debug_messenger,
 
             physical_device,
+            memory_properties: physical_device_memory_properties,
             device,
 
             queue_family,
@@ -223,6 +244,10 @@ impl VulkanRenderer {
             ubo_layout,
             render_pass,
             graphics_pipeline,
+
+            depth_image,
+            depth_image_view,
+            depth_image_memory,
 
             texture_image,
             texture_image_view,
@@ -474,8 +499,12 @@ impl VulkanApp for VulkanRenderer {
             self.swapchain_format,
             &self.swapchain_images,
         );
-        self.render_pass =
-            utility::general::create_render_pass(&self.device, self.swapchain_format);
+        self.render_pass = utility::general::create_render_pass(
+            &self.instance,
+            &self.device,
+            self.physical_device,
+            self.swapchain_format,
+        );
         let (graphics_pipeline, pipeline_layout) = utility::general::create_graphics_pipeline(
             &self.device,
             self.render_pass,
@@ -485,10 +514,24 @@ impl VulkanApp for VulkanRenderer {
         self.graphics_pipeline = graphics_pipeline;
         self.pipeline_layout = pipeline_layout;
 
+        let depth_resources = utility::general::create_depth_resources(
+            &self.instance,
+            &self.device,
+            self.physical_device,
+            self.command_pool,
+            self.graphics_queue,
+            self.swapchain_extent,
+            &self.memory_properties,
+        );
+        self.depth_image = depth_resources.0;
+        self.depth_image_view = depth_resources.1;
+        self.depth_image_memory = depth_resources.2;
+
         self.swapchain_framebuffers = utility::general::create_framebuffers(
             &self.device,
             self.render_pass,
             &self.swapchain_imageviews,
+            self.depth_image_view,
             self.swapchain_extent,
         );
         self.command_buffers = utility::general::create_command_buffers(
@@ -507,6 +550,10 @@ impl VulkanApp for VulkanRenderer {
 
     fn cleanup_swapchain(&self) {
         unsafe {
+            self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
+            self.device.free_memory(self.depth_image_memory, None);
+
             self.device
                 .free_command_buffers(self.command_pool, &self.command_buffers);
             for &framebuffer in self.swapchain_framebuffers.iter() {

@@ -787,7 +787,12 @@ fn create_shader_module(device: &ash::Device, code: Vec<u8>) -> vk::ShaderModule
     }
 }
 
-pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> vk::RenderPass {
+pub fn create_render_pass(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    surface_format: vk::Format,
+) -> vk::RenderPass {
     let color_attachment = vk::AttachmentDescription {
         flags: vk::AttachmentDescriptionFlags::empty(),
         format: surface_format,
@@ -800,25 +805,42 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
     };
 
+    let depth_attachment = vk::AttachmentDescription {
+        flags: vk::AttachmentDescriptionFlags::empty(),
+        format: find_depth_format(instance, physical_device),
+        samples: vk::SampleCountFlags::TYPE_1,
+        load_op: vk::AttachmentLoadOp::CLEAR,
+        store_op: vk::AttachmentStoreOp::DONT_CARE,
+        stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+        stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+        initial_layout: vk::ImageLayout::UNDEFINED,
+        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
     let color_attachment_ref = vk::AttachmentReference {
         attachment: 0,
         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     };
 
+    let depth_attachment_ref = vk::AttachmentReference {
+        attachment: 1,
+        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
     let subpasses = [vk::SubpassDescription {
+        color_attachment_count: 1,
+        p_color_attachments: &color_attachment_ref,
+        p_depth_stencil_attachment: &depth_attachment_ref,
         flags: vk::SubpassDescriptionFlags::empty(),
         pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
         input_attachment_count: 0,
         p_input_attachments: ptr::null(),
-        color_attachment_count: 1,
-        p_color_attachments: &color_attachment_ref,
         p_resolve_attachments: ptr::null(),
-        p_depth_stencil_attachment: ptr::null(),
         preserve_attachment_count: 0,
         p_preserve_attachments: ptr::null(),
     }];
 
-    let render_pass_attachments = [color_attachment];
+    let render_pass_attachments = [color_attachment, depth_attachment];
 
     let subpass_dependencies = [vk::SubpassDependency {
         src_subpass: vk::SUBPASS_EXTERNAL,
@@ -826,7 +848,8 @@ pub fn create_render_pass(device: &ash::Device, surface_format: vk::Format) -> v
         src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
         dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
         src_access_mask: vk::AccessFlags::empty(),
-        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ
+            | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
         dependency_flags: vk::DependencyFlags::empty(),
     }];
 
@@ -878,12 +901,13 @@ pub fn create_framebuffers(
     device: &ash::Device,
     render_pass: vk::RenderPass,
     image_views: &Vec<vk::ImageView>,
+    depth_image_view: vk::ImageView,
     swapchain_extent: vk::Extent2D,
 ) -> Vec<vk::Framebuffer> {
     let mut framebuffers = vec![];
 
     for &image_view in image_views.iter() {
-        let attachments = [image_view];
+        let attachments = [image_view, depth_image_view];
 
         let framebuffer_create_info = vk::FramebufferCreateInfo {
             s_type: vk::StructureType::FRAMEBUFFER_CREATE_INFO,
@@ -1418,6 +1442,77 @@ pub fn create_descriptor_sets(
     }
 
     descriptor_sets
+}
+
+pub fn create_depth_resources(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    physical_device: vk::PhysicalDevice,
+    _command_pool: vk::CommandPool,
+    _submit_queue: vk::Queue,
+    swapchain_extent: vk::Extent2D,
+    device_memory_properties: &vk::PhysicalDeviceMemoryProperties,
+) -> (vk::Image, vk::ImageView, vk::DeviceMemory) {
+    let depth_format = find_depth_format(instance, physical_device);
+    let (depth_image, depth_image_memory) = create_image(
+        device,
+        swapchain_extent.width,
+        swapchain_extent.height,
+        1,
+        vk::SampleCountFlags::TYPE_1,
+        depth_format,
+        vk::ImageTiling::OPTIMAL,
+        vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        device_memory_properties,
+    );
+    let depth_image_view = create_image_view(
+        device,
+        depth_image,
+        depth_format,
+        vk::ImageAspectFlags::DEPTH,
+        1,
+    );
+
+    (depth_image, depth_image_view, depth_image_memory)
+}
+
+fn find_depth_format(instance: &ash::Instance, physical_device: vk::PhysicalDevice) -> vk::Format {
+    find_supported_format(
+        instance,
+        physical_device,
+        &[
+            vk::Format::D32_SFLOAT,
+            vk::Format::D32_SFLOAT_S8_UINT,
+            vk::Format::D24_UNORM_S8_UINT,
+        ],
+        vk::ImageTiling::OPTIMAL,
+        vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT,
+    )
+}
+
+fn find_supported_format(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    candidate_formats: &[vk::Format],
+    tiling: vk::ImageTiling,
+    features: vk::FormatFeatureFlags,
+) -> vk::Format {
+    for &format in candidate_formats.iter() {
+        let format_properties =
+            unsafe { instance.get_physical_device_format_properties(physical_device, format) };
+        if tiling == vk::ImageTiling::LINEAR
+            && format_properties.linear_tiling_features.contains(features)
+        {
+            return format.clone();
+        } else if tiling == vk::ImageTiling::OPTIMAL
+            && format_properties.optimal_tiling_features.contains(features)
+        {
+            return format.clone();
+        }
+    }
+
+    panic!("Failed to find supported format!")
 }
 
 pub fn create_texture_image(
