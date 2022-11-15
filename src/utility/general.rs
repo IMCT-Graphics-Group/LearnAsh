@@ -1,4 +1,7 @@
-use crate::{utility, utility::constants::*, utility::platforms, utility::structures::*};
+use crate::{
+    utility, utility::constants::*, utility::debug::ValidationInfo, utility::platforms,
+    utility::structures::*,
+};
 
 use std::{
     cmp::{max, min},
@@ -10,8 +13,6 @@ use std::{
 
 use ash::vk;
 use image::EncodableLayout;
-
-use super::debug::ValidationInfo;
 
 pub fn create_instance(
     entry: &ash::Entry,
